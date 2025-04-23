@@ -1,0 +1,10 @@
+echo "node_modules/
+*.pbf
+osrm-data/
+trafine-data/
+__pycache__/
+*.log
+*.sqlite3
+*.db
+.env" > .gitignore
+

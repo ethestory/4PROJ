@@ -1,0 +1,57 @@
+version: "3.9"
+
+services:
+  web:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - REACT_APP_API_URL=http://localhost:5000
+    depends_on:
+      - api
+
+  api:
+    build: ./backend
+    ports:
+      - "5000:5000"
+    environment:
+      - DB_HOST=db
+      - DB_NAME=trafine
+      - DB_USER=trafine_user
+      - DB_PASSWORD=password
+      - OSRM_URL=http://osrm:5000
+    depends_on:
+      - db
+      - osrm
+
+  db:
+    image: postgres:15
+    environment:
+      - POSTGRES_DB=trafine
+      - POSTGRES_USER=trafine_user
+      - POSTGRES_PASSWORD=password
+    volumes:
+      - trafine-data:/var/lib/postgresql/data
+
+  osrm-prep:
+    image: osrm/osrm-backend
+    command: >
+      sh -c "osrm-extract -p /opt/car.lua /data/normandie.osm.pbf &&
+             osrm-partition /data/normandie.osrm &&
+             osrm-customize /data/normandie.osrm"
+    volumes:
+      - ./osrm-data:/data
+    entrypoint: ""
+
+  osrm:
+    image: osrm/osrm-backend
+    command: osrm-routed --algorithm mld /data/normandie.osrm
+    ports:
+      - "5001:5000"  # Accessible en local sur 5001
+    volumes:
+      - ./osrm-data:/data
+    depends_on:
+      - osrm-prep
+
+volumes:
+  trafine-data:
