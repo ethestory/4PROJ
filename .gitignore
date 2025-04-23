@@ -13,3 +13,4 @@ git rm -r --cached osrm-data/
 git add .gitignore
 git commit -m "Ignore les fichiers lourds"
 osrm-data/
+osrm-backend/data/
