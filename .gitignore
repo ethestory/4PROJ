@@ -7,4 +7,9 @@ __pycache__/
 *.sqlite3
 *.db
 .env" > .gitignore
-
+echo "osrm-data/*" >> .gitignore
+echo "*.pbf" >> .gitignore
+git rm -r --cached osrm-data/
+git add .gitignore
+git commit -m "Ignore les fichiers lourds"
+osrm-data/
