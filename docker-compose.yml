@@ -34,20 +34,16 @@ services:
       - trafine-data:/var/lib/postgresql/data
 
   osrm-prep:
-    image: osrm/osrm-backend
-    command: >
-      sh -c "osrm-extract -p /opt/car.lua /data/normandie.osm.pbf &&
-             osrm-partition /data/normandie.osrm &&
-             osrm-customize /data/normandie.osrm"
+    build: ./osrm-backend
     volumes:
-      - ./osrm-data:/data
-    entrypoint: ""
+      - ./mnt/osrm/osrm-data:/data
+    entrypoint: ""  # désactive le CMD par défaut de l'image
 
   osrm:
-    image: osrm/osrm-backend
-    command: osrm-routed --algorithm mld /data/normandie.osrm
+    image: trafine-osrm-prep
+    command: osrm-routed --algorithm mld /data/france.osrm
     ports:
-      - "5001:5000"  # Accessible en local sur 5001
+      - "5001:5000"
     volumes:
       - ./osrm-data:/data
     depends_on:

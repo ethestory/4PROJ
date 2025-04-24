@@ -1,16 +1,13 @@
-echo "node_modules/
-*.pbf
+# Build & OSRM data
 osrm-data/
-trafine-data/
+mnt/osrm/osrm-data/
 __pycache__/
-*.log
-*.sqlite3
-*.db
-.env" > .gitignore
-echo "osrm-data/*" >> .gitignore
-echo "*.pbf" >> .gitignore
-git rm -r --cached osrm-data/
-git add .gitignore
-git commit -m "Ignore les fichiers lourds"
-osrm-data/
-osrm-backend/data/
+*.pyc
+
+# Node modules
+**/node_modules/
+
+# Env vars
+.env
+.env.*
+
