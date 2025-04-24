@@ -34,18 +34,22 @@ services:
       - trafine-data:/var/lib/postgresql/data
 
   osrm-prep:
-    build: ./osrm-backend
+    build:
+      context: ./osrm-backend
+    image: trafine-osrm-prep
     volumes:
-      - ./mnt/osrm/osrm-data:/data
+      - ./osrm-backend/data:/data
     entrypoint: ""  # désactive le CMD par défaut de l'image
 
   osrm:
+    build:
+      context: ./osrm-backend
     image: trafine-osrm-prep
     command: osrm-routed --algorithm mld /data/france.osrm
     ports:
       - "5001:5000"
     volumes:
-      - ./osrm-data:/data
+      - ./osrm-backend/data:/data
     depends_on:
       - osrm-prep
 
