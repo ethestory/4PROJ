@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  database:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: suprss_db
+      POSTGRES_USER: suprss_user
+      POSTGRES_PASSWORD: suprss_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - suprss_network
+
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://suprss_user:suprss_password@database:5432/suprss_db
+    depends_on:
+      - database
+    volumes:
+      - ./backend:/app
+    networks:
+      - suprss_network
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend:/app
+    networks:
+      - suprss_network
+
+volumes:
+  postgres_data:
+
+networks:
+  suprss_network:
+    driver: bridge
