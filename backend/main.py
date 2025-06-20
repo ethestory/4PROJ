@@ -1,5 +1,10 @@
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 import feedparser
+
+# Modèle pour la requête
+class RSSRequest(BaseModel):
+    url: str
 
 # Initialisation de l'application FastAPI
 app = FastAPI(
@@ -36,6 +41,42 @@ async def test_rss():
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur RSS: {str(e)}")
+
+# Route pour parser n'importe quel flux RSS
+@app.post("/parse-rss")
+async def parse_rss(request: RSSRequest):
+    """Parse un flux RSS à partir de son URL"""
+    try:
+        feed = feedparser.parse(request.url)
+        
+        if feed.bozo:
+            raise HTTPException(status_code=400, detail="Flux RSS invalide ou inaccessible")
+        
+        # Informations du flux
+        feed_info = {
+            "title": feed.feed.get("title", "Flux sans titre"),
+            "description": feed.feed.get("description", ""),
+            "link": feed.feed.get("link", ""),
+        }
+        
+        # Les 5 premiers articles
+        articles = []
+        for entry in feed.entries[:5]:
+            articles.append({
+                "title": entry.get("title", "Sans titre"),
+                "link": entry.get("link", ""),
+                "published": entry.get("published", ""),
+                "summary": entry.get("summary", "")[:200] + "..." if len(entry.get("summary", "")) > 200 else entry.get("summary", "")
+            })
+        
+        return {
+            "feed_info": feed_info,
+            "total_articles": len(feed.entries),
+            "articles": articles
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur lors du parsing: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
