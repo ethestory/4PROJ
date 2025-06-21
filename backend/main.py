@@ -13,7 +13,7 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Route de test basique
+# Route de test de l'API
 @app.get("/")
 async def root():
     return {"message": "SUPRSS API is running!"}
@@ -78,14 +78,20 @@ async def parse_rss(request: RSSRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur lors du parsing: {str(e)}")
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+# Route de test pour la base de données
 
 @app.get("/test-db")
 async def test_database():
-    from database import test_connection
-    if test_connection():
-        return {"status": "Database connected"}
-    else:
-        return{"status": "Database connection failed"}
+    try:
+        from database import test_connection
+        if test_connection():
+            return {"status": "Database connected"}
+        else:
+            return{"status": "Database connection failed"}
+    except Exception as e:
+        return {"status": f"Database error: {str(e)}"}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

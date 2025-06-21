@@ -24,18 +24,7 @@ services:
       - ./backend:/app
     networks:
       - suprss_network
-
-  frontend:
-    build: ./frontend
-    ports:
-      - "3000:3000"
-    depends_on:
-      - backend
-    volumes:
-      - ./frontend:/app
-    networks:
-      - suprss_network
-
+      
 volumes:
   postgres_data:
 
