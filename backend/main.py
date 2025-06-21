@@ -6,6 +6,12 @@ import feedparser
 class RSSRequest(BaseModel):
     url: str
 
+#Modèle pour créer un flux 
+class FeedCreate(BaseModel):
+    title: str
+    url: str
+    description: str = ""
+
 # Initialisation de l'application FastAPI
 app = FastAPI(
     title="SUPRSS API",
@@ -102,6 +108,40 @@ async def create_tables():
         return {"status" : "Tables created successfully!"}
     except Exception as e:
         return {"status": f"Error creating tables: {str(e)}"}
+
+#creer un flux RSS
+@app.post("/feeds")
+async def create_feed(feed_data : FeedCreate):
+    try:
+        from database import SessionLocal
+        from models import Feed 
+
+        #création d'une session
+        db = SessionLocal()
+
+        #Création du flux 
+        new_feed = Feed(
+            title=feed_data.title,
+            url=feed_data.url,
+            description=feed_data.description
+        )
+        #Ajout dans la BDD
+        db.add(new_feed)
+        db.commit()
+        db.refresh(new_feed)
+        db.close()
+
+        #retour cli 
+        return {
+            "id": new_feed.id,
+            "title": new_feed.title,
+            "url": new_feed.url,
+            "description": new_feed.description,
+            "created_at": new_feed.created_at.isoformat()
+        }
+    except Exception as e:
+        return{"error": f"Error creating feed: {str(e)}"}
+    
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
