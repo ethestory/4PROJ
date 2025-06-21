@@ -81,3 +81,11 @@ async def parse_rss(request: RSSRequest):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
+@app.get("/test-db")
+async def test_database():
+    from database import test_connection
+    if test_connection():
+        return {"status": "Database connected"}
+    else:
+        return{"status": "Database connection failed"}
