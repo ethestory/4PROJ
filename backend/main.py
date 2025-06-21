@@ -92,6 +92,16 @@ async def test_database():
     except Exception as e:
         return {"status": f"Database error: {str(e)}"}
 
+#route pour créer les tables 
+
+@app.post("/create-tables")
+async def create_tables():
+    try:
+        from database import create_tables
+        create_tables()
+        return {"status" : "Tables created successfully!"}
+    except Exception as e:
+        return {"status": f"Error creating tables: {str(e)}"}
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
