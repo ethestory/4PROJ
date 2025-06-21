@@ -168,7 +168,53 @@ async def get_feeds():
         }
     except Exception as e:
         return {"error": f"Error fetching feeds: {str(e)}"}
-    
+
+ #Récupérer et stocker les articles du flux   
+@app.post("/feeds/{feed_id}/fetch-articles")
+async def fetch_articles(feed_id: int):
+    try:
+        from database import SessionLocal
+        from models import Feed, Article
+        import feedparser
+
+        db = SessionLocal()
+
+        try:
+            feed = db.query(Feed).filter(Feed.id == feed_id).first()
+            if not feed:
+                return {"error": "Feed not found"}
+            
+            rss_feed = feedparser.parse(feed.url)
+            articles_added = 0
+
+            #Ajouter chaque article s'il n'existe pas 
+            for entry in rss_feed.entries[:10]:
+                link = entry.get("link", "")
+                if link:
+                    existing = db.query(Article).filter(Article.link == link).first()
+                    if not existing:
+                        new_article = Article(
+                            title=entry.get("title", "Sans Titre"),
+                            link=link,
+                            published=entry.get("published", ""),
+                            author=entry.get("author", ""),
+                            summary=entry.get("summary", "")[:500] if entry.get("summary") else "",
+                            feed_id=feed_id
+                        )
+                        db.add(new_article)
+                        articles_added += 1
+            db.commit()
+
+            return {
+                "message": f"{articles_added} articles added for feed '{feed.title}'",
+                "feed_id" : feed_id,
+                "articles_added": articles_added
+            }
+        finally:
+            db.close()
+    except Exception as e:
+        return {"error": f"Error fetching articles: {str(e)}"}        
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
