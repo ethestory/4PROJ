@@ -215,6 +215,51 @@ async def fetch_articles(feed_id: int):
     except Exception as e:
         return {"error": f"Error fetching articles: {str(e)}"}        
 
+#Lister les articles d'un flux
+@app.get("/feeds/{feed_id}/articles")
+async def get_articles(feed_id: int):
+    try:
+        from database import SessionLocal
+        from models import Feed, Article
+
+        db = SessionLocal()
+
+        try:
+            #Vérif du flux qui existe
+            feed = db.query(Feed).filter(Feed.id == feed_id).first()
+            if not feed:
+                return{"error": "Feed not found"}
+            #Récupérer les articles 
+            articles = db.query(Article).filter(Article.feed_id == feed_id).all()
+
+            return {
+                "feed": {
+                    "id": feed.id,
+                    "title": feed.title,
+                    "url": feed.url
+                },
+                "articles": [
+                    {
+                        "id": article.id,
+                        "title": article.title,
+                        "link": article.link,
+                        "published": article.published,
+                        "author": article.author,
+                        "summary": article.summary[:200] + "..." if len(article.summary) > 200 else article.summary,
+                        "is_read": article.is_read,
+                        "is_favorite": article.is_favorite,
+                        "create_at": article.created_at.isoformat()
+                    }
+                    for article in articles
+                ]
+                    
+                }
+        finally:
+            db.close()
+    except Exception as e:
+        return {"error", f"Error fetching articles: {str(e)}"}
+        
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
