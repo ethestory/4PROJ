@@ -141,6 +141,33 @@ async def create_feed(feed_data : FeedCreate):
         }
     except Exception as e:
         return{"error": f"Error creating feed: {str(e)}"}
+
+#Lister tous les flux RSS$
+@app.get("/feeds")
+async def get_feeds():
+    try:
+        from database import SessionLocal
+        from models import Feed
+
+        db= SessionLocal()
+        feeds = db.query(Feed).all()    
+        db.close()
+
+        return {
+            "feeds": [
+                {
+                    "id": feed.id,
+                    "title": feed.title,
+                    "url": feed.url,
+                    "description": feed.description,
+                    "is_active": feed.is_active,
+                    "created_at": feed.created_at.isoformat()
+                }
+                for feed in feeds
+            ]
+        }
+    except Exception as e:
+        return {"error": f"Error fetching feeds: {str(e)}"}
     
 if __name__ == "__main__":
     import uvicorn
