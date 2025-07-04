@@ -258,7 +258,47 @@ async def get_articles(feed_id: int):
             db.close()
     except Exception as e:
         return {"error", f"Error fetching articles: {str(e)}"}
+
+#Modèle pour l'inscription utilisateur
+class UserCreate(BaseModel):
+    username: str
+    email: str
+    password: str
+
+#Inscription utilisateur
+@app.post("/register")
+async def register(user_data: UserCreate):
+    try:
+        from database import SessionLocal
+        from models import User
+        from auth import hash_password
+
+        db = SessionLocal()
+
+        try:
+            #Vérifier si l'utilisateur existe 
+            existing = db.query(User).filter(User.username == user_data.username).first()
+            if existing:
+                return {"error": "Username already exists"}
+            
+            #enregistrement de l'utilisateur 
+            hashed_pwd = hash_password(user_data.password)
+            new_user = User(
+                username=user_data.username,
+                email = user_data.email,
+                hashed_password=hashed_pwd
+            )
+
+            db.add(new_user)
+            db.commit()
+
+            return{"message": f"User {user_data.username} created sucessfully"}
         
+        finally: 
+            db.close()
+
+    except Exception as e:
+       return{"error": f"Registration failed: {str(e)}"}
 
 if __name__ == "__main__":
     import uvicorn
