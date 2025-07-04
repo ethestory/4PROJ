@@ -4,6 +4,14 @@ from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
 
 Base = declarative_base()
+#Définition des utilisateurs 
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, index=True)
+    username =  Column(String(50), unique=True, index=True, nullable=False)
+    email = Column(String(100), unique=True, index=True, nullable=False)
+    hased_password =  Column(String(255), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
 #Définition du Feed
 class Feed(Base):
     __tablename__="feeds"
@@ -30,3 +38,4 @@ class Article(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     #Ajout clé étrangère vers la table Feed
     feed_id = Column(Integer, ForeignKey("feeds.id"))
+
