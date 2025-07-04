@@ -395,6 +395,31 @@ async def toggle_article_read(article_id: int, read_status: bool = True):
 
     except Exception as e:
         return {"error": f"Error : {str(e)}"}
+    
+#marqué un article en favori
+@app.patch("/articles/{article_id}/favorite")
+async def toggle_article_favorite(article_id: int, favorite_status: bool = True):
+    try:
+        from database import SessionLocal
+        from models import Article
+
+        db = SessionLocal()
+
+        try:
+            article = db.query(Article).filter(Article.id == article_id).first()
+            if not article: 
+                return {"error" : "Article not found"}
+            
+            article.is_favorite = favorite_status
+            db.commit()
+
+            return {"message": "Artcile favorite status updated", "article_id": article_id, "is_favorite": favorite_status}
+        
+        finally: 
+            db.close()
+
+    except Exception as e: 
+        return {"error": f"Error: {str(e)}"}
 
 if __name__ == "__main__":
     import uvicorn
