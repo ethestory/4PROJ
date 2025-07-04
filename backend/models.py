@@ -22,6 +22,7 @@ class Feed(Base):
     description = Column(Text, nullable=True)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    owner_id = Column(Integer, ForeignKey("users.id"))
 
 #Défintion des Articles$
 class Article(Base):
