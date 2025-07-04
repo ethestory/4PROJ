@@ -171,6 +171,43 @@ async def get_feeds():
     except Exception as e:
         return {"error": f"Error fetching feeds: {str(e)}"}
 
+#Lister les flux d'un utilisateur spécifique
+@app.get("/users/{user_id}/feeds")
+async def get_user_feeds(user_id: int):
+    try:
+        from database import SessionLocal
+        from models import Feed
+
+        db = SessionLocal()
+
+        try:
+            feeds = db.query(Feed).filter(Feed.owner_id == user_id).all()
+            
+            # Construire la réponse avec détails
+            feeds_list = []
+            for feed in feeds:
+                feeds_list.append({
+                    "id": feed.id,
+                    "title": feed.title,
+                    "url": feed.url,
+                    "description": feed.description,
+                    "is_active": feed.is_active,
+                    "created_at": feed.created_at.isoformat()
+                })
+            
+            return {
+                "user_id": user_id,
+                "feeds_count": len(feeds),
+                "feeds": feeds_list
+            }
+
+        finally:
+            db.close()
+
+    except Exception as e:
+        return{"error": f"Error fetching user feeds: {str(e)}"}
+
+
  #Récupérer et stocker les articles du flux   
 @app.post("/feeds/{feed_id}/fetch-articles")
 async def fetch_articles(feed_id: int):
