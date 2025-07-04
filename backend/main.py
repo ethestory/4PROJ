@@ -265,6 +265,39 @@ class UserCreate(BaseModel):
     email: str
     password: str
 
+#Modèle pour la connexion 
+class UserLogin(BaseModel):
+    username: str
+    password: str
+
+#connexion utilisateur
+@app.post("/login")
+async def login(user_data: UserLogin):
+    try:
+        from database import SessionLocal
+        from models import User
+        from auth import verify_password
+
+        db = SessionLocal()
+
+        try:
+            #trouver l'utilisateur
+            user = db.query(User).filter(User.username == user_data.username).first()
+            if not user:
+                return{"error": "Invalid username"}
+            
+            # Vérifier le mot de passe
+            if not verify_password(user_data.password, user.hashed_password):
+                return{"error": "Invalid password"}
+            
+            return{"message": f"Welcome {user.username}!", "user_id": user.id}
+        
+        finally:
+            db.close() 
+
+    except Exception as e:
+        return{"error": f"Login failed: {str(e)}"}
+
 #Inscription utilisateur
 @app.post("/register")
 async def register(user_data: UserCreate):
