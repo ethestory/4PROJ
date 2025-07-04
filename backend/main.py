@@ -11,6 +11,7 @@ class FeedCreate(BaseModel):
     title: str
     url: str
     description: str = ""
+    owner_id: int
 
 # Initialisation de l'application FastAPI
 app = FastAPI(
@@ -123,7 +124,8 @@ async def create_feed(feed_data : FeedCreate):
         new_feed = Feed(
             title=feed_data.title,
             url=feed_data.url,
-            description=feed_data.description
+            description=feed_data.description,
+            owner_id=feed_data.owner_id
         )
         #Ajout dans la BDD
         db.add(new_feed)
