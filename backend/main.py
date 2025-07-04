@@ -371,6 +371,30 @@ async def register(user_data: UserCreate):
 
     except Exception as e:
        return{"error": f"Registration failed: {str(e)}"}
+    
+#permet de marquer un article lu ou non lu    
+@app.patch("/articles/{article_id}/read")
+async def toggle_article_read(article_id: int, read_status: bool = True):
+    try:
+        from database import SessionLocal
+        from models import Article
+
+        db = SessionLocal()
+
+        try:
+            article =  db.query(Article).filter(Article.id == article_id).first()
+            if not article :
+                return {"error" : "Article not found"}
+            article.is_read = read_status
+            db.commit()
+
+            return {"message": "Article status updated", "article_id": article_id, "is_read": read_status}
+        
+        finally:
+            db.close()
+
+    except Exception as e:
+        return {"error": f"Error : {str(e)}"}
 
 if __name__ == "__main__":
     import uvicorn
