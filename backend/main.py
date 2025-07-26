@@ -429,6 +429,55 @@ async def toggle_article_favorite(article_id: int, favorite_status: bool = True)
     except Exception as e: 
         return {"error": f"Error: {str(e)}"}
 
+@app.get("/feeds/{feed_id}/articles/filter")
+async def filter_aticles(feed_id: int, read: bool = None, favorite: bool =  None, search: str = None):
+    try:
+        from database import SessionLocal
+        from models import Article 
+
+        db = SessionLocal()
+
+        try:
+            query = db.query(Article).filter(Article.feed_id == feed_id)
+            if read is not None: 
+                query = query.filter(Article.is_read == read)
+
+            if favorite is not None:
+                query = query.filter(Article.is_favorite == favorite)
+
+            if search: 
+                query = query.filter(
+                    (Article.title.ilike(f"%{search}%")) |
+                    (Article.summary.ilike(f"%{search}%"))
+                )
+            articles = query.all()
+
+            return {
+                "feed_id": feed_id,
+                "filters": {"read": read, "favorite": favorite, "search": search},
+                "count": len(articles),
+                "articles": [
+                    {
+                        "id": article.id,
+                        "title": article.title,
+                        "link": article.link,
+                        "published": article.published,
+                        "summary": article.summary[:200] + "..." if len(article.summary) > 200 else article.summary,
+                        "is_read": article.is_read,
+                        "is_favorite": article.is_favorite,
+                        "created_at": article.created_at.isoformat()
+                    }
+                    for article in articles
+                ]
+            }
+        finally: 
+            db.close()
+
+    except Exception as e:
+        return {"error": f"Erreur dans le filtrage des articles : {str(e)}"}
+
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
