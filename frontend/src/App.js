@@ -97,20 +97,34 @@ function App() {
     if (!selectedFeed) return;
 
     try {
-      let url = 'http://localhost:8000/feeds/${selectedFeed}/articles/filter?';
+      let url = `http://localhost:8000/feeds/${selectedFeed}/articles/filter`;
+      let params = [];
 
-      if (filters.read !== null) url += 'read=${filters.read}&';
-      if (filters.favorite !== null) url += 'favorite=${filters.search}&';
-      if (filters.search) url += 'search=${encodeURIComponent(filters.search)}&';
+      if (filters.read !== null) {
+        params.push(`read=${filters.read}`);
+      }
+      if (filters.favorite !== null) {
+        params.push(`favorite=${filters.favorite}`);
+      }
+      if (filters.search) {
+        params.push(`search=${encodeURIComponent(filters.search)}`);
+      }
+      
+      if (params.length > 0) {
+        url += '?' + params.join('&');
+      }
 
+      console.log('URL finale:', url);
+      
       const response = await axios.get(url);
       setArticles(response.data.articles || []);
-      setMessage('Filtrage appliqué : ${response.data.count} articles trouvés');
+      setMessage(`Filtrage appliqué : ${response.data.count} articles trouvés`);
     } catch (error) {
       setMessage('Erreur lors du filtrage');
       console.error(error);
     }
   };
+
   const resetFilters = () => {
     setFilters({ read: null, favorite: null, search: '' });
     if (selectedFeed) viewArticles(selectedFeed);
@@ -139,7 +153,7 @@ function App() {
       } else {
         viewArticles(selectedFeed);
       }
-    } catch (error){
+    } catch (error) {
       setMessage('Erreur lors de la mise à jour des favoris');
     }
   };
@@ -227,20 +241,21 @@ function App() {
           {selectedFeed && (
             <div>
               <h2>Articles du flux</h2>
+              
               <div style={{padding: '10px', background: '#f9f9f9', margin: '10px 0'}}>
                 <h3>Filtres</h3>
                 <input
-                type="text"
-                placeholder="Recherche dans les articles"
-                value={filters.search}
-                onChange={(e) => setFilters({...filters, search: e.target.value})}
-                style={{marginRight: '10px'}}
+                  type="text"
+                  placeholder="Recherche dans les articles"
+                  value={filters.search}
+                  onChange={(e) => setFilters({...filters, search: e.target.value})}
+                  style={{marginRight: '10px'}}
                 />
 
                 <select
-                value={filters.read == null ? 'all' : filters.read.toString()}
-                onChange={(e) => setFilters({...filters, read: e.target.vallue == 'all' ? null : e.target.value == 'true'})}
-                style={{marginRight: '10px'}}
+                  value={filters.read === null ? 'all' : filters.read.toString()}
+                  onChange={(e) => setFilters({...filters, read: e.target.value === 'all' ? null : e.target.value === 'true'})}
+                  style={{marginRight: '10px'}}
                 >
                   <option value="all">Tous les articles</option>
                   <option value="false">Non lus</option>
@@ -248,17 +263,19 @@ function App() {
                 </select>
 
                 <select
-                  value={filters.favorite == null ? 'all' : filters.favorite.toString()}
-                  onChange={(e) => setFilters({...filters, favorite: e.target.value == 'all' ? null : e.target.value == 'true'})}
+                  value={filters.favorite === null ? 'all' : filters.favorite.toString()}
+                  onChange={(e) => setFilters({...filters, favorite: e.target.value === 'all' ? null : e.target.value === 'true'})}
                   style={{marginRight: '10px'}}
-                  >
-                    <option value="all">Tous</option>
-                    <option value="true">Favoris</option>
-                    <option vlaue="false">Non favoris</option>
-                  </select>
-                  <button onClick={filterArticles} style={{marginRight: '10px'}}>Filtrer</button>
-                  <button onClick={resetFilters}>Reset</button>
-                  </div>
+                >
+                  <option value="all">Tous</option>
+                  <option value="true">Favoris</option>
+                  <option value="false">Non favoris</option>
+                </select>
+                
+                <button onClick={filterArticles} style={{marginRight: '10px'}}>Filtrer</button>
+                <button onClick={resetFilters}>Reset</button>
+              </div>
+              
               {articles.length === 0 ? (
                 <p>Aucun article trouvé</p>
               ) : (
@@ -270,15 +287,15 @@ function App() {
                     <br />
                     <button 
                       onClick={() => toggleRead(article.id, article.is_read)}
-                      style={{marginTop: '10px'}}
+                      style={{marginTop: '10px', marginRight: '10px'}}
                     >
                       {article.is_read ? 'Marquer non lu' : 'Marquer lu'}
                     </button>
                     <button
-                    onClick={() => toggleFavorite(article.id, article.is_favorite)}
-                    style={{marginTop: '10px'}}
+                      onClick={() => toggleFavorite(article.id, article.is_favorite)}
+                      style={{marginTop: '10px'}}
                     >
-                      {article.is_favorite ? 'Retirer favori' : 'Ajouter favori'}
+                      {article.is_favorite ? '★ Retirer favori' : '☆ Ajouter favori'}
                     </button>
                   </div>
                 ))
