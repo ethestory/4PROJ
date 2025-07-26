@@ -25,13 +25,20 @@ function App() {
   };
 
   const handleLogin = async () => {
+    console.log('Tentative de connexion avec', loginData);
     try {
       const result = await api.login(loginData.username, loginData.password);
+      console.log('Reponse API:', result);
+      if (result.error) {
+        setMessage('Erreur :' + result.error);
+        return;
+      }
       setMessage(result.message || 'Connexion réussie !');
       setIsLoggedIn(true);
       setCurrentUser(loginData.username);
       setLoginData({ username: '', password: '' });
     } catch (error) {
+      console.log('Erreur attrapée :', error);
       setMessage('Erreur connexion : ' + error.response?.data?.error);
     }
   };
