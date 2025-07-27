@@ -430,10 +430,11 @@ async def toggle_article_favorite(article_id: int, favorite_status: bool = True)
         return {"error": f"Error: {str(e)}"}
 
 @app.get("/feeds/{feed_id}/articles/filter")
-async def filter_aticles(feed_id: int, read: bool = None, favorite: bool =  None, search: str = None):
+async def filter_aticles(feed_id: int, read: bool = None, favorite: bool =  None, search: str = None, days: int = None):
     try:
         from database import SessionLocal
         from models import Article 
+        from datetime import datetime, timedelta
 
         db = SessionLocal()
 
@@ -459,7 +460,7 @@ async def filter_aticles(feed_id: int, read: bool = None, favorite: bool =  None
 
             return {
                 "feed_id": feed_id,
-                "filters": {"read": read, "favorite": favorite, "search": search},
+                "filters": {"read": read, "favorite": favorite, "search": search, "days": days},
                 "count": len(articles),
                 "articles": [
                     {
@@ -501,7 +502,7 @@ async def refresh_feed(feed_id: int):
             articles_added = 0
             articles_updated = 0
 
-            for entry in rss_feed.entries[:1000]:
+            for entry in rss_feed.entries[:20]:
                 link = entry.get("link", "")
                 if link:
                     existing = db.query(Article).filter(Article.link == link).first()
@@ -522,14 +523,14 @@ async def refresh_feed(feed_id: int):
                         existing.summary = entry.get("summary", existing.summary)[:500] if entry.get("summary") else existing.summary
                         articles_updated += 1
 
-                    feed.last_updated = datetime.utcnow()
-                    db.commit()
+            feed.last_updated = datetime.utcnow()
+            db.commit()
 
-                    return {
-                        "message": f"Flux actualisé ! {articles_added} nouveaux articles, {articles_updated} mise à jour",
-                        "articles_added": articles_added,
-                        "articles_updated": articles_updated,
-                        "last_updated": feed.last_updated.isoformat()
+            return {
+                    "message": f"Flux actualisé ! {articles_added} nouveaux articles, {articles_updated} mise à jour",
+                    "articles_added": articles_added,
+                    "articles_updated": articles_updated,
+                    "last_updated": feed.last_updated.isoformat()
                     }
                 
         finally:

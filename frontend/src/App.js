@@ -110,30 +110,44 @@ function App() {
   const filterArticles = async () => {
     if (!selectedFeed) return;
 
+    console.log('=== DEBUG FILTRAGE ===');
+    console.log('État filters:', filters);
+    console.log('filters.read:', filters.read);
+    console.log('filters.favorite:', filters.favorite);
+    console.log('filters.search:', filters.search);
+    console.log('filters.days:', filters.days);
+
     try {
       let url = `http://localhost:8000/feeds/${selectedFeed}/articles/filter`;
       let params = [];
 
       if (filters.read !== null) {
+        console.log('Ajout filtre read:', filters.read);
         params.push(`read=${filters.read}`);
       }
       if (filters.favorite !== null) {
+        console.log('Ajout filtre favorite:', filters.favorite);
         params.push(`favorite=${filters.favorite}`);
       }
       if (filters.search) {
+        console.log('Ajout filtre search:', filters.search);
         params.push(`search=${encodeURIComponent(filters.search)}`);
       }
       if (filters.days !== null) {
+        console.log('Ajout filtre days:', filters.days);
         params.push(`days=${filters.days}`);
       }
       
-      if (params.lengt > 0) {
+      console.log('Params array:', params);
+      
+      if (params.length > 0) {
         url += '?' + params.join('&');
       }
 
       console.log('URL finale:', url);
       
       const response = await axios.get(url);
+      console.log('Réponse API:', response.data);
       setArticles(response.data.articles || []);
       setMessage(`Filtrage appliqué : ${response.data.count} articles trouvés`);
     } catch (error) {
@@ -150,7 +164,7 @@ function App() {
   const toggleRead = async (articleId, isRead) => {
     try {
       await axios.patch(`http://localhost:8000/articles/${articleId}/read?read_status=${!isRead}`);
-      if (filters.read !== null || filters.favorite !== null || filters.search) {
+      if (filters.read !== null || filters.favorite !== null || filters.search || filters.days !== null) {
         filterArticles();
       } else {
         viewArticles(selectedFeed);
@@ -164,7 +178,7 @@ function App() {
     try {
       const url = `http://localhost:8000/articles/${articleId}/favorite?favorite_status=${!isFavorite}`;
       await axios.patch(url);
-      if (filters.read !== null || filters.favorite !== null || filters.search) {
+      if (filters.read !== null || filters.favorite !== null || filters.search || filters.days !== null) {
         filterArticles();
       } else {
         viewArticles(selectedFeed);
@@ -229,7 +243,8 @@ function App() {
               <div key={feed.id} style={{border: '1px solid #ccc', padding: '10px', margin: '10px'}}>
                 <h3>{feed.title}</h3>
                 <p>{feed.url}</p>
-              
+                
+                {/* Affichage de la dernière synchronisation */}
                 {feed.last_updated && (
                   <p style={{fontSize: '12px', color: '#666', marginBottom: '10px'}}>
                     Dernière synchro : {new Date(feed.last_updated).toLocaleString('fr-FR')}
@@ -271,8 +286,14 @@ function App() {
             <div>
               <h2>Articles du flux</h2>
               
+              {/* Debug des filtres */}
+              <div style={{background: 'yellow', padding: '5px', marginBottom: '10px'}}>
+                <strong>Debug filters:</strong> {JSON.stringify(filters)}
+              </div>
+              
               <div style={{padding: '10px', background: '#f9f9f9', margin: '10px 0'}}>
                 <h3>Filtres</h3>
+                
                 <input
                   type="text"
                   placeholder="Recherche dans les articles"
@@ -300,6 +321,7 @@ function App() {
                   <option value="true">Favoris</option>
                   <option value="false">Non favoris</option>
                 </select>
+
                 <select
                   value={filters.days === null ? 'all' : filters.days.toString()}
                   onChange={(e) => setFilters({...filters, days: e.target.value === 'all' ? null : parseInt(e.target.value)})}
