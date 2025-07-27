@@ -30,10 +30,8 @@ function App() {
   };
 
   const handleLogin = async () => {
-    console.log('Tentative de connexion avec', loginData);
     try {
       const result = await api.login(loginData.username, loginData.password);
-      console.log('Reponse API:', result);
       if (result.error) {
         setMessage('Erreur :' + result.error);
         return;
@@ -43,7 +41,6 @@ function App() {
       setCurrentUser(loginData.username);
       setLoginData({ username: '', password: '' });
     } catch (error) {
-      console.log('Erreur attrapée :', error);
       setMessage('Erreur connexion : ' + error.response?.data?.error);
     }
   };
@@ -158,6 +155,21 @@ function App() {
     }
   };
 
+  const refreshFeed = async (feedId) => {
+    try {
+      console.log('Actualisation flux ID:', feedId);
+      const response = await axios.post(`http://localhost:8000/feeds/${feedId}/refresh`);
+      console.log('Réponse actualisation:', response.data);
+      setMessage(response.data.message);
+      if (selectedFeed == feedId) {
+        viewArticles(feedId);
+      }
+    } catch (error) {
+      console.error('Erreur actualisation:', error);
+      setMessage('Erreur lors de l\'actualisation');
+    }
+  };
+
   return (
     <div className="App">
       <h1>SUPRSS - Lecteur de flux RSS</h1>
@@ -214,9 +226,17 @@ function App() {
                 <h3>{feed.title}</h3>
                 <p>{feed.url}</p>
                 <button onClick={() => viewArticles(feed.id)}>Voir les articles</button>
+               <button 
+                onClick={() => refreshFeed(feed.id)}
+                style={{marginLeft: '10px'}}
+              >
+                Actualiser
+              </button>
               </div>
+              
             ))}
           </div>
+          
 
           <div>
             <h2>Ajouter un flux</h2>

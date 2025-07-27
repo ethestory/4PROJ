@@ -476,7 +476,59 @@ async def filter_aticles(feed_id: int, read: bool = None, favorite: bool =  None
     except Exception as e:
         return {"error": f"Erreur dans le filtrage des articles : {str(e)}"}
 
+@app.post("/feeds/{feed_id}/refresh")
+async def refresh_feed(feed_id: int):
+    try:
+        from database import SessionLocal
+        from models import Feed, Article
+        import feedparser
 
+        db = SessionLocal()
+
+        try:
+            feed = db.query(Feed).filter(Feed.id == feed_id).first()
+            if not feed:
+                return {"error": "Feed not found"}
+            
+            rss_feed = feedparser.parse(feed.url)
+
+            articles_added = 0
+            articles_updated = 0
+
+            for entry in rss_feed.entries[:1000]:
+                link = entry.get("link", "")
+                if link:
+                    existing = db.query(Article).filter(Article.link == link).first()
+                    if not existing:
+                        new_article = Article (
+                            title=entry.get("title", "Sans titre"),
+                            link=link,
+                            published=entry.get("published", ""),
+                            author=entry.get("author", ""),
+                            summary=entry.get("summary", "")[:500] if entry.get("summary") else "",
+                            feed_id=feed_id
+                        )
+                        db.add(new_article)
+                        articles_added += 1
+                    else:
+                        existing.title = entry.get("title", existing.title)
+                        existing.published = entry.get("published", existing.published)
+                        existing.summary = entry.get("summary", existing.summary)[:500] if entry.get("summary") else existing.summary
+                        articles_updated += 1
+
+                    db.commit()
+
+                    return {
+                        "message": f"Flux actualisé ! {articles_added} nouveaux articles, {articles_updated} mise à jour",
+                        "articles_added": articles_added,
+                        "articles_updated": articles_updated
+                    }
+                
+        finally:
+            db.close()
+            
+    except Exception as e:
+        return{"error": f"Erreur de rafraichissement du flux: {str(e)}"}
 
 if __name__ == "__main__":
     import uvicorn
