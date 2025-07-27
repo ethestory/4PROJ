@@ -16,7 +16,8 @@ function App() {
   const [filters, setFilters] = useState({
     read: null,
     favorite: null,
-    search: ''
+    search: '',
+    days: null
   });
 
   const handleRegister = async () => {
@@ -90,6 +91,22 @@ function App() {
     }
   };
 
+  const refreshFeed = async (feedId) => {
+    try {
+      console.log('Actualisation flux ID:', feedId);
+      const response = await axios.post(`http://localhost:8000/feeds/${feedId}/refresh`);
+      console.log('Réponse actualisation:', response.data);
+      setMessage(response.data.message);
+      loadFeeds(); // Recharger la liste des flux pour voir la nouvelle date
+      if (selectedFeed === feedId) {
+        viewArticles(feedId); // Recharger l'affichage des articles
+      }
+    } catch (error) {
+      console.error('Erreur actualisation:', error);
+      setMessage('Erreur lors de l\'actualisation');
+    }
+  };
+
   const filterArticles = async () => {
     if (!selectedFeed) return;
 
@@ -106,8 +123,11 @@ function App() {
       if (filters.search) {
         params.push(`search=${encodeURIComponent(filters.search)}`);
       }
+      if (filters.days !== null) {
+        params.push(`days=${filters.days}`);
+      }
       
-      if (params.length > 0) {
+      if (params.lengt > 0) {
         url += '?' + params.join('&');
       }
 
@@ -123,7 +143,7 @@ function App() {
   };
 
   const resetFilters = () => {
-    setFilters({ read: null, favorite: null, search: '' });
+    setFilters({ read: null, favorite: null, search: '', days: null });
     if (selectedFeed) viewArticles(selectedFeed);
   };
 
@@ -141,7 +161,6 @@ function App() {
   };
 
   const toggleFavorite = async (articleId, isFavorite) => {
-    console.log('Toggle favorite:', articleId, 'current:', isFavorite);
     try {
       const url = `http://localhost:8000/articles/${articleId}/favorite?favorite_status=${!isFavorite}`;
       await axios.patch(url);
@@ -152,21 +171,6 @@ function App() {
       }
     } catch (error) {
       setMessage('Erreur lors de la mise à jour des favoris');
-    }
-  };
-
-  const refreshFeed = async (feedId) => {
-    try {
-      console.log('Actualisation flux ID:', feedId);
-      const response = await axios.post(`http://localhost:8000/feeds/${feedId}/refresh`);
-      console.log('Réponse actualisation:', response.data);
-      setMessage(response.data.message);
-      if (selectedFeed == feedId) {
-        viewArticles(feedId);
-      }
-    } catch (error) {
-      console.error('Erreur actualisation:', error);
-      setMessage('Erreur lors de l\'actualisation');
     }
   };
 
@@ -225,18 +229,23 @@ function App() {
               <div key={feed.id} style={{border: '1px solid #ccc', padding: '10px', margin: '10px'}}>
                 <h3>{feed.title}</h3>
                 <p>{feed.url}</p>
-                <button onClick={() => viewArticles(feed.id)}>Voir les articles</button>
-               <button 
-                onClick={() => refreshFeed(feed.id)}
-                style={{marginLeft: '10px'}}
-              >
-                Actualiser
-              </button>
-              </div>
               
+                {feed.last_updated && (
+                  <p style={{fontSize: '12px', color: '#666', marginBottom: '10px'}}>
+                    Dernière synchro : {new Date(feed.last_updated).toLocaleString('fr-FR')}
+                  </p>
+                )}
+                
+                <button onClick={() => viewArticles(feed.id)}>Voir les articles</button>
+                <button 
+                  onClick={() => refreshFeed(feed.id)}
+                  style={{marginLeft: '10px'}}
+                >
+                  🔄 Actualiser
+                </button>
+              </div>
             ))}
           </div>
-          
 
           <div>
             <h2>Ajouter un flux</h2>
@@ -291,6 +300,17 @@ function App() {
                   <option value="true">Favoris</option>
                   <option value="false">Non favoris</option>
                 </select>
+                <select
+                  value={filters.days === null ? 'all' : filters.days.toString()}
+                  onChange={(e) => setFilters({...filters, days: e.target.value === 'all' ? null : parseInt(e.target.value)})}
+                  style={{marginRight: '10px'}}
+                >
+                  <option value="all">Toutes les dates</option>
+                  <option value="1">Aujourd'hui</option>
+                  <option value="7">7 derniers jours</option>
+                  <option value="30">30 derniers jours</option>
+                  <option value="90">90 derniers jours</option>
+                </select>
                 
                 <button onClick={filterArticles} style={{marginRight: '10px'}}>Filtrer</button>
                 <button onClick={resetFilters}>Reset</button>
@@ -302,6 +322,14 @@ function App() {
                 articles.map(article => (
                   <div key={article.id} style={{border: '1px solid #ddd', padding: '10px', margin: '10px'}}>
                     <h4>{article.title}</h4>
+                    
+                    {/* Affichage de la date de publication */}
+                    {article.published && (
+                      <p style={{fontSize: '12px', color: '#888', marginBottom: '10px'}}>
+                        Publié le : {new Date(article.published).toLocaleString('fr-FR')}
+                      </p>
+                    )}
+                    
                     <p>{article.summary}</p>
                     <a href={article.link} target="_blank" rel="noopener noreferrer">Lire l'article</a>
                     <br />

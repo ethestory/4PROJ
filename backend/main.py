@@ -277,7 +277,7 @@ async def get_articles(feed_id: int):
             if not feed:
                 return{"error": "Feed not found"}
             #Récupérer les articles 
-            articles = db.query(Article).filter(Article.feed_id == feed_id).all()
+            articles = db.query(Article).filter(Article.feed_id == feed_id).order_by(Article.created_at.desc()).all()
 
             return {
                 "feed": {
@@ -450,7 +450,12 @@ async def filter_aticles(feed_id: int, read: bool = None, favorite: bool =  None
                     (Article.title.ilike(f"%{search}%")) |
                     (Article.summary.ilike(f"%{search}%"))
                 )
-            articles = query.all()
+            
+            if days is not None:
+                cutoff_date = datetime.utcnow() - timedelta(days=days)
+                query = query.filter(Article.created_at >= cutoff_date)
+
+            articles = query.order_by(Article.created_at.desc()).all()
 
             return {
                 "feed_id": feed_id,
@@ -482,6 +487,7 @@ async def refresh_feed(feed_id: int):
         from database import SessionLocal
         from models import Feed, Article
         import feedparser
+        from datetime import datetime
 
         db = SessionLocal()
 
@@ -516,12 +522,14 @@ async def refresh_feed(feed_id: int):
                         existing.summary = entry.get("summary", existing.summary)[:500] if entry.get("summary") else existing.summary
                         articles_updated += 1
 
+                    feed.last_updated = datetime.utcnow()
                     db.commit()
 
                     return {
                         "message": f"Flux actualisé ! {articles_added} nouveaux articles, {articles_updated} mise à jour",
                         "articles_added": articles_added,
-                        "articles_updated": articles_updated
+                        "articles_updated": articles_updated,
+                        "last_updated": feed.last_updated.isoformat()
                     }
                 
         finally:
