@@ -19,6 +19,15 @@ function App() {
     search: '',
     days: null
   });
+  const [pagination, setPagination] = useState({
+    current_page: 1,
+    per_page: 20,
+    total_articles: 0,
+    total_pages: 0,
+    has_next: false,
+    has_previous: false
+  });
+  const [currentPage, setCurrentPage] = useState(1);
 
   const handleRegister = async () => {
     try {
@@ -52,6 +61,15 @@ function App() {
     setFeeds([]);
     setArticles([]);
     setSelectedFeed(null);
+    setPagination({
+      current_page: 1,
+      per_page: 20,
+      total_articles: 0,
+      total_pages: 0,
+      has_next: false,
+      has_previous: false
+    });
+    setCurrentPage(1);
     setMessage('Déconnecté');
   };
 
@@ -78,13 +96,15 @@ function App() {
     }
   };
 
-  const viewArticles = async (feedId) => {
+  const viewArticles = async (feedId, page = 1) => {
     try {
       await axios.post(`http://localhost:8000/feeds/${feedId}/fetch-articles`);
-      const response = await axios.get(`http://localhost:8000/feeds/${feedId}/articles`);
+      const response = await axios.get(`http://localhost:8000/feeds/${feedId}/articles?page=${page}&per_page=20`);
       setArticles(response.data.articles || []);
+      setPagination(response.data.pagination || {});
       setSelectedFeed(feedId);
-      setMessage('Articles chargés !');
+      setCurrentPage(page);
+      setMessage(`Page ${page} - ${response.data.pagination?.total_articles || 0} articles au total`);
     } catch (error) {
       setMessage('Erreur lors du chargement des articles');
       console.error(error);
@@ -99,7 +119,7 @@ function App() {
       setMessage(response.data.message);
       loadFeeds(); // Recharger la liste des flux pour voir la nouvelle date
       if (selectedFeed === feedId) {
-        viewArticles(feedId); // Recharger l'affichage des articles
+        refreshCurrentView(); // Rafraîchir la vue actuelle
       }
     } catch (error) {
       console.error('Erreur actualisation:', error);
@@ -107,19 +127,16 @@ function App() {
     }
   };
 
-  const filterArticles = async () => {
+  const filterArticles = async (page = 1) => {
     if (!selectedFeed) return;
 
-    console.log('=== DEBUG FILTRAGE ===');
+    console.log('=== DEBUG FILTRAGE AVEC PAGINATION ===');
+    console.log('Page:', page);
     console.log('État filters:', filters);
-    console.log('filters.read:', filters.read);
-    console.log('filters.favorite:', filters.favorite);
-    console.log('filters.search:', filters.search);
-    console.log('filters.days:', filters.days);
 
     try {
       let url = `http://localhost:8000/feeds/${selectedFeed}/articles/filter`;
-      let params = [];
+      let params = [`page=${page}`, 'per_page=20'];
 
       if (filters.read !== null) {
         console.log('Ajout filtre read:', filters.read);
@@ -138,37 +155,64 @@ function App() {
         params.push(`days=${filters.days}`);
       }
       
-      console.log('Params array:', params);
-      
-      if (params.length > 0) {
-        url += '?' + params.join('&');
-      }
-
+      url += '?' + params.join('&');
       console.log('URL finale:', url);
       
       const response = await axios.get(url);
       console.log('Réponse API:', response.data);
       setArticles(response.data.articles || []);
-      setMessage(`Filtrage appliqué : ${response.data.count} articles trouvés`);
+      setPagination(response.data.pagination || {});
+      setCurrentPage(page);
+      setMessage(`Filtrage appliqué - Page ${page} - ${response.data.pagination?.total_articles || 0} articles trouvés`);
     } catch (error) {
       setMessage('Erreur lors du filtrage');
       console.error(error);
     }
   };
 
+  const applyFilters = () => {
+    setCurrentPage(1);
+    filterArticles(1);
+  };
+
   const resetFilters = () => {
     setFilters({ read: null, favorite: null, search: '', days: null });
-    if (selectedFeed) viewArticles(selectedFeed);
+    setCurrentPage(1);
+    if (selectedFeed) viewArticles(selectedFeed, 1);
+  };
+
+  const refreshCurrentView = () => {
+    if (filters.read !== null || filters.favorite !== null || filters.search || filters.days !== null) {
+      filterArticles(currentPage);
+    } else {
+      viewArticles(selectedFeed, currentPage);
+    }
+  };
+
+  const goToPage = (page) => {
+    if (filters.read !== null || filters.favorite !== null || filters.search || filters.days !== null) {
+      filterArticles(page);
+    } else {
+      viewArticles(selectedFeed, page);
+    }
+  };
+
+  const goToNextPage = () => {
+    if (pagination.has_next) {
+      goToPage(currentPage + 1);
+    }
+  };
+
+  const goToPreviousPage = () => {
+    if (pagination.has_previous) {
+      goToPage(currentPage - 1);
+    }
   };
 
   const toggleRead = async (articleId, isRead) => {
     try {
       await axios.patch(`http://localhost:8000/articles/${articleId}/read?read_status=${!isRead}`);
-      if (filters.read !== null || filters.favorite !== null || filters.search || filters.days !== null) {
-        filterArticles();
-      } else {
-        viewArticles(selectedFeed);
-      }
+      refreshCurrentView();
     } catch (error) {
       setMessage('Erreur lors de la mise à jour');
     }
@@ -178,14 +222,101 @@ function App() {
     try {
       const url = `http://localhost:8000/articles/${articleId}/favorite?favorite_status=${!isFavorite}`;
       await axios.patch(url);
-      if (filters.read !== null || filters.favorite !== null || filters.search || filters.days !== null) {
-        filterArticles();
-      } else {
-        viewArticles(selectedFeed);
-      }
+      refreshCurrentView();
     } catch (error) {
       setMessage('Erreur lors de la mise à jour des favoris');
     }
+  };
+
+  const PaginationComponent = () => {
+    if (pagination.total_pages <= 1) return null;
+
+    const pages = [];
+    const maxVisiblePages = 5;
+    let startPage = Math.max(1, currentPage - Math.floor(maxVisiblePages / 2));
+    let endPage = Math.min(pagination.total_pages, startPage + maxVisiblePages - 1);
+    
+    if (endPage - startPage + 1 < maxVisiblePages) {
+      startPage = Math.max(1, endPage - maxVisiblePages + 1);
+    }
+
+    for (let i = startPage; i <= endPage; i++) {
+      pages.push(i);
+    }
+
+    return (
+      <div style={{ padding: '20px', textAlign: 'center', borderTop: '1px solid #ddd' }}>
+        <div style={{ marginBottom: '10px', fontSize: '14px', color: '#666' }}>
+          Page {currentPage} sur {pagination.total_pages} - 
+          {pagination.total_articles} articles au total
+        </div>
+        
+        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '5px' }}>
+          <button 
+            onClick={goToPreviousPage} 
+            disabled={!pagination.has_previous}
+            style={{ 
+              padding: '8px 12px', 
+              border: '1px solid #ddd',
+              backgroundColor: pagination.has_previous ? '#f8f9fa' : '#e9ecef',
+              cursor: pagination.has_previous ? 'pointer' : 'not-allowed'
+            }}
+          >
+            ← Précédent
+          </button>
+          
+          {startPage > 1 && (
+            <>
+              <button onClick={() => goToPage(1)} style={{ padding: '8px 12px', border: '1px solid #ddd' }}>
+                1
+              </button>
+              {startPage > 2 && <span style={{ padding: '8px' }}>...</span>}
+            </>
+          )}
+          
+          {pages.map(page => (
+            <button
+              key={page}
+              onClick={() => goToPage(page)}
+              style={{
+                padding: '8px 12px',
+                border: '1px solid #ddd',
+                backgroundColor: page === currentPage ? '#007bff' : '#f8f9fa',
+                color: page === currentPage ? 'white' : 'black',
+                cursor: 'pointer'
+              }}
+            >
+              {page}
+            </button>
+          ))}
+          
+          {endPage < pagination.total_pages && (
+            <>
+              {endPage < pagination.total_pages - 1 && <span style={{ padding: '8px' }}>...</span>}
+              <button 
+                onClick={() => goToPage(pagination.total_pages)} 
+                style={{ padding: '8px 12px', border: '1px solid #ddd' }}
+              >
+                {pagination.total_pages}
+              </button>
+            </>
+          )}
+          
+          <button 
+            onClick={goToNextPage} 
+            disabled={!pagination.has_next}
+            style={{ 
+              padding: '8px 12px', 
+              border: '1px solid #ddd',
+              backgroundColor: pagination.has_next ? '#f8f9fa' : '#e9ecef',
+              cursor: pagination.has_next ? 'pointer' : 'not-allowed'
+            }}
+          >
+            Suivant →
+          </button>
+        </div>
+      </div>
+    );
   };
 
   return (
@@ -334,10 +465,10 @@ function App() {
                   <option value="90">90 derniers jours</option>
                 </select>
                 
-                <button onClick={filterArticles} style={{marginRight: '10px'}}>Filtrer</button>
+                <button onClick={applyFilters} style={{marginRight: '10px'}}>Filtrer</button>
                 <button onClick={resetFilters}>Reset</button>
               </div>
-              
+
               {articles.length === 0 ? (
                 <p>Aucun article trouvé</p>
               ) : (
@@ -348,7 +479,9 @@ function App() {
                     {/* Affichage de la date de publication */}
                     {article.published && (
                       <p style={{fontSize: '12px', color: '#888', marginBottom: '10px'}}>
-                        Publié le : {new Date(article.published).toLocaleString('fr-FR')}
+                        Publié le : {article.published.includes('T') ? 
+                          new Date(article.published).toLocaleString('fr-FR') : 
+                          article.published}
                       </p>
                     )}
                     
@@ -370,6 +503,9 @@ function App() {
                   </div>
                 ))
               )}
+
+              {/* Pagination en bas */}
+              <PaginationComponent />
             </div>
           )}
         </div>

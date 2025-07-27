@@ -152,7 +152,7 @@ async def create_feed(feed_data : FeedCreate):
     except Exception as e:
         return{"error": f"Error creating feed: {str(e)}"}
 
-#Lister tous les flux RSS$
+#Lister tous les flux RSS
 @app.get("/feeds")
 async def get_feeds():
     try:
@@ -171,6 +171,7 @@ async def get_feeds():
                     "url": feed.url,
                     "description": feed.description,
                     "is_active": feed.is_active,
+                    "last_updated": feed.last_updated.isoformat() if hasattr(feed, 'last_updated') and feed.last_updated else None,
                     "created_at": feed.created_at.isoformat()
                 }
                 for feed in feeds
@@ -216,7 +217,7 @@ async def get_user_feeds(user_id: int):
         return{"error": f"Error fetching user feeds: {str(e)}"}
 
 
- #Récupérer et stocker les articles du flux   
+#Récupérer et stocker les articles du flux - récupère TOUS les articles
 @app.post("/feeds/{feed_id}/fetch-articles")
 async def fetch_articles(feed_id: int):
     try:
@@ -234,8 +235,8 @@ async def fetch_articles(feed_id: int):
             rss_feed = feedparser.parse(feed.url)
             articles_added = 0
 
-            #Ajouter chaque article s'il n'existe pas 
-            for entry in rss_feed.entries[:10]:
+            # Récupérer TOUS les articles du flux - en ordre inverse pour avoir les plus récents d'abord
+            for entry in reversed(rss_feed.entries):
                 link = entry.get("link", "")
                 if link:
                     existing = db.query(Article).filter(Article.link == link).first()
@@ -262,9 +263,9 @@ async def fetch_articles(feed_id: int):
     except Exception as e:
         return {"error": f"Error fetching articles: {str(e)}"}        
 
-#Lister les articles d'un flux
+#Lister les articles d'un flux AVEC PAGINATION
 @app.get("/feeds/{feed_id}/articles")
-async def get_articles(feed_id: int):
+async def get_articles(feed_id: int, page: int = 1, per_page: int = 20):
     try:
         from database import SessionLocal
         from models import Feed, Article
@@ -276,8 +277,24 @@ async def get_articles(feed_id: int):
             feed = db.query(Feed).filter(Feed.id == feed_id).first()
             if not feed:
                 return{"error": "Feed not found"}
-            #Récupérer les articles 
-            articles = db.query(Article).filter(Article.feed_id == feed_id).order_by(Article.created_at.desc()).all()
+            
+            # Calcul de l'offset pour la pagination
+            offset = (page - 1) * per_page
+            
+            # Récupérer TOUS les articles du flux sans ordre particulier
+            all_articles = db.query(Article).filter(Article.feed_id == feed_id).all()
+            
+            # Trier en Python par date de publication (format string)
+            all_articles.sort(key=lambda x: x.published if x.published else x.created_at.isoformat(), reverse=True)
+            
+            # Calculer la pagination manuellement
+            total_articles = len(all_articles)
+            total_pages = (total_articles + per_page - 1) // per_page
+            
+            # Découper pour la page demandée
+            start_idx = (page - 1) * per_page
+            end_idx = start_idx + per_page
+            articles = all_articles[start_idx:end_idx]
 
             return {
                 "feed": {
@@ -285,26 +302,33 @@ async def get_articles(feed_id: int):
                     "title": feed.title,
                     "url": feed.url
                 },
+                "pagination": {
+                    "current_page": page,
+                    "per_page": per_page,
+                    "total_articles": total_articles,
+                    "total_pages": total_pages,
+                    "has_next": page < total_pages,
+                    "has_previous": page > 1
+                },
                 "articles": [
                     {
                         "id": article.id,
                         "title": article.title,
                         "link": article.link,
-                        "published": article.published,
+                        "published": article.published if article.published else article.created_at.isoformat(),
                         "author": article.author,
                         "summary": article.summary[:200] + "..." if len(article.summary) > 200 else article.summary,
                         "is_read": article.is_read,
                         "is_favorite": article.is_favorite,
-                        "create_at": article.created_at.isoformat()
+                        "created_at": article.created_at.isoformat()
                     }
                     for article in articles
                 ]
-                    
-                }
+            }
         finally:
             db.close()
     except Exception as e:
-        return {"error", f"Error fetching articles: {str(e)}"}
+        return {"error": f"Error fetching articles: {str(e)}"}
 
 #Modèle pour l'inscription utilisateur
 class UserCreate(BaseModel):
@@ -429,8 +453,9 @@ async def toggle_article_favorite(article_id: int, favorite_status: bool = True)
     except Exception as e: 
         return {"error": f"Error: {str(e)}"}
 
+# Route de filtrage AVEC PAGINATION
 @app.get("/feeds/{feed_id}/articles/filter")
-async def filter_aticles(feed_id: int, read: bool = None, favorite: bool =  None, search: str = None, days: int = None):
+async def filter_articles(feed_id: int, page: int = 1, per_page: int = 20, read: bool = None, favorite: bool = None, search: str = None, days: int = None):
     try:
         from database import SessionLocal
         from models import Article 
@@ -440,6 +465,8 @@ async def filter_aticles(feed_id: int, read: bool = None, favorite: bool =  None
 
         try:
             query = db.query(Article).filter(Article.feed_id == feed_id)
+            
+            # Application des filtres
             if read is not None: 
                 query = query.filter(Article.is_read == read)
 
@@ -456,18 +483,38 @@ async def filter_aticles(feed_id: int, read: bool = None, favorite: bool =  None
                 cutoff_date = datetime.utcnow() - timedelta(days=days)
                 query = query.filter(Article.created_at >= cutoff_date)
 
-            articles = query.order_by(Article.created_at.desc()).all()
+            # Récupérer tous les articles et les trier en Python
+            all_filtered_articles = query.all()
+            
+            # Trier par date de publication (string) en ordre décroissant
+            all_filtered_articles.sort(key=lambda x: x.published if x.published else x.created_at.isoformat(), reverse=True)
+            
+            # Calculer la pagination manuellement
+            total_articles = len(all_filtered_articles)
+            total_pages = (total_articles + per_page - 1) // per_page
+            
+            # Découper pour la page demandée
+            start_idx = (page - 1) * per_page
+            end_idx = start_idx + per_page
+            articles = all_filtered_articles[start_idx:end_idx]
 
             return {
                 "feed_id": feed_id,
                 "filters": {"read": read, "favorite": favorite, "search": search, "days": days},
-                "count": len(articles),
+                "pagination": {
+                    "current_page": page,
+                    "per_page": per_page,
+                    "total_articles": total_articles,
+                    "total_pages": total_pages,
+                    "has_next": page < total_pages,
+                    "has_previous": page > 1
+                },
                 "articles": [
                     {
                         "id": article.id,
                         "title": article.title,
                         "link": article.link,
-                        "published": article.published,
+                        "published": article.published if article.published else article.created_at.isoformat(),
                         "summary": article.summary[:200] + "..." if len(article.summary) > 200 else article.summary,
                         "is_read": article.is_read,
                         "is_favorite": article.is_favorite,
@@ -482,6 +529,7 @@ async def filter_aticles(feed_id: int, read: bool = None, favorite: bool =  None
     except Exception as e:
         return {"error": f"Erreur dans le filtrage des articles : {str(e)}"}
 
+# Route de refresh pour récupérer TOUS les nouveaux articles
 @app.post("/feeds/{feed_id}/refresh")
 async def refresh_feed(feed_id: int):
     try:
@@ -502,7 +550,8 @@ async def refresh_feed(feed_id: int):
             articles_added = 0
             articles_updated = 0
 
-            for entry in rss_feed.entries[:20]:
+            # Traiter TOUS les articles du flux - en ordre inverse
+            for entry in reversed(rss_feed.entries):
                 link = entry.get("link", "")
                 if link:
                     existing = db.query(Article).filter(Article.link == link).first()
@@ -527,7 +576,7 @@ async def refresh_feed(feed_id: int):
             db.commit()
 
             return {
-                    "message": f"Flux actualisé ! {articles_added} nouveaux articles, {articles_updated} mise à jour",
+                    "message": f"Flux actualisé ! {articles_added} nouveaux articles, {articles_updated} mis à jour",
                     "articles_added": articles_added,
                     "articles_updated": articles_updated,
                     "last_updated": feed.last_updated.isoformat()
