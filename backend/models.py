@@ -1,20 +1,23 @@
-# Déclaration des tables
+# Déclaration des tables SQLAlchemy
 from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
 
 Base = declarative_base()
-#Définition des utilisateurs 
+
 class User(Base):
+    """Modèle utilisateur pour l'authentification"""
     __tablename__ = "users"
+    
     id = Column(Integer, primary_key=True, index=True)
-    username =  Column(String(50), unique=True, index=True, nullable=False)
+    username = Column(String(50), unique=True, index=True, nullable=False)
     email = Column(String(100), unique=True, index=True, nullable=False)
-    hashed_password =  Column(String(255), nullable=False)
+    hashed_password = Column(String(255), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
-#Définition du Feed
+
 class Feed(Base):
-    __tablename__="feeds"
+    """Modèle flux RSS"""
+    __tablename__ = "feeds"
 
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String(200), nullable=False)
@@ -22,10 +25,11 @@ class Feed(Base):
     description = Column(Text, nullable=True)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    last_updated = Column(DateTime, nullable=True)
     owner_id = Column(Integer, ForeignKey("users.id"))
 
-#Défintion des Articles$
 class Article(Base):
+    """Modèle article RSS"""
     __tablename__ = "articles"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -37,6 +41,4 @@ class Article(Base):
     is_read = Column(Boolean, default=False)
     is_favorite = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
-    #Ajout clé étrangère vers la table Feed
     feed_id = Column(Integer, ForeignKey("feeds.id"))
-

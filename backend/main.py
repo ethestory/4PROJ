@@ -2,25 +2,119 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import feedparser
+from datetime import datetime, timedelta
+import dateutil.parser
 
-# Modèle pour la requête
+def format_date_for_display(date_string):
+    """Convertit une date RSS en format DD/MM/YYYY HH:MM heure française"""
+    if not date_string:
+        return ""
+    try:
+        # Parser la date RSS
+        parsed_date = dateutil.parser.parse(date_string)
+        
+        # Détecter si c'est UTC en regardant la string originale
+        is_utc = (
+            date_string.endswith('Z') or 
+            '+00:00' in date_string or 
+            'GMT' in date_string or
+            'UTC' in date_string or
+            (parsed_date.tzinfo is not None and parsed_date.utcoffset().total_seconds() == 0)
+        )
+        
+        # Si c'est UTC, ajouter l'offset France
+        if is_utc:
+            now = datetime.now()
+            # Été = +2h, Hiver = +1h
+            offset_hours = 2 if (now.month >= 4 and now.month <= 9) else 1
+            french_date = parsed_date.replace(tzinfo=None) + timedelta(hours=offset_hours)
+        else:
+            # Déjà en heure locale
+            french_date = parsed_date.replace(tzinfo=None)
+        
+        return french_date.strftime("%d/%m/%Y %H:%M")
+        
+    except Exception:
+        return date_string
+
+def get_sort_key(article):
+    """Génère une clé de tri chronologique pour un article"""
+    try:
+        if article.published:
+            date_str = article.published.strip()
+            
+            # Format français DD/MM/YYYY HH:MM
+            if '/' in date_str and len(date_str.split('/')) == 3:
+                try:
+                    if ' ' in date_str:
+                        date_part, time_part = date_str.split(' ', 1)
+                    else:
+                        date_part = date_str
+                        time_part = "00:00"
+                    
+                    day, month, year = date_part.split('/')
+                    if ':' in time_part:
+                        hour, minute = time_part.split(':')
+                    else:
+                        hour, minute = "00", "00"
+                    
+                    return datetime(int(year), int(month), int(day), int(hour), int(minute))
+                except:
+                    pass
+            
+            # Format RSS standard avec même logique que format_date_for_display
+            try:
+                parsed_date = dateutil.parser.parse(date_str)
+                
+                # Détecter UTC avec même logique
+                is_utc = (
+                    date_str.endswith('Z') or 
+                    '+00:00' in date_str or 
+                    'GMT' in date_str or
+                    'UTC' in date_str or
+                    (parsed_date.tzinfo is not None and parsed_date.utcoffset().total_seconds() == 0)
+                )
+                
+                if is_utc:
+                    now = datetime.now()
+                    offset_hours = 2 if (now.month >= 4 and now.month <= 9) else 1
+                    return parsed_date.replace(tzinfo=None) + timedelta(hours=offset_hours)
+                else:
+                    return parsed_date.replace(tzinfo=None)
+            except:
+                pass
+        
+        return article.created_at
+        
+    except Exception:
+        return article.created_at
+
+# Modèles Pydantic
 class RSSRequest(BaseModel):
     url: str
 
-#Modèle pour créer un flux 
 class FeedCreate(BaseModel):
     title: str
     url: str
     description: str = ""
     owner_id: int
 
-# Initialisation de l'application FastAPI
+class UserCreate(BaseModel):
+    username: str
+    email: str
+    password: str
+
+class UserLogin(BaseModel):
+    username: str
+    password: str
+
+# Initialisation FastAPI
 app = FastAPI(
     title="SUPRSS API",
     description="API pour la gestion de flux RSS",
     version="1.0.0"
 )
-#fonctionement pour CORS
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],
@@ -28,17 +122,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# Route de test de l'API
+
 @app.get("/")
 async def root():
     return {"message": "SUPRSS API is running!"}
 
-# Route de santé
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "service": "SUPRSS Backend"}
 
-# Test simple de parsing RSS
 @app.get("/test-rss")
 async def test_rss():
     """Test basique avec le flux du Monde"""
@@ -57,7 +149,6 @@ async def test_rss():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur RSS: {str(e)}")
 
-# Route pour parser n'importe quel flux RSS
 @app.post("/parse-rss")
 async def parse_rss(request: RSSRequest):
     """Parse un flux RSS à partir de son URL"""
@@ -67,14 +158,12 @@ async def parse_rss(request: RSSRequest):
         if feed.bozo:
             raise HTTPException(status_code=400, detail="Flux RSS invalide ou inaccessible")
         
-        # Informations du flux
         feed_info = {
             "title": feed.feed.get("title", "Flux sans titre"),
             "description": feed.feed.get("description", ""),
             "link": feed.feed.get("link", ""),
         }
         
-        # Les 5 premiers articles
         articles = []
         for entry in feed.entries[:5]:
             articles.append({
@@ -93,9 +182,6 @@ async def parse_rss(request: RSSRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur lors du parsing: {str(e)}")
 
-
-# Route de test pour la base de données
-
 @app.get("/test-db")
 async def test_database():
     try:
@@ -103,45 +189,38 @@ async def test_database():
         if test_connection():
             return {"status": "Database connected"}
         else:
-            return{"status": "Database connection failed"}
+            return {"status": "Database connection failed"}
     except Exception as e:
         return {"status": f"Database error: {str(e)}"}
-
-#route pour créer les tables 
 
 @app.post("/create-tables")
 async def create_tables():
     try:
         from database import create_tables
         create_tables()
-        return {"status" : "Tables created successfully!"}
+        return {"status": "Tables created successfully!"}
     except Exception as e:
         return {"status": f"Error creating tables: {str(e)}"}
 
-#creer un flux RSS
 @app.post("/feeds")
-async def create_feed(feed_data : FeedCreate):
+async def create_feed(feed_data: FeedCreate):
     try:
         from database import SessionLocal
         from models import Feed 
 
-        #création d'une session
         db = SessionLocal()
-
-        #Création du flux 
         new_feed = Feed(
             title=feed_data.title,
             url=feed_data.url,
             description=feed_data.description,
             owner_id=feed_data.owner_id
         )
-        #Ajout dans la BDD
+        
         db.add(new_feed)
         db.commit()
         db.refresh(new_feed)
         db.close()
 
-        #retour cli 
         return {
             "id": new_feed.id,
             "title": new_feed.title,
@@ -150,16 +229,15 @@ async def create_feed(feed_data : FeedCreate):
             "created_at": new_feed.created_at.isoformat()
         }
     except Exception as e:
-        return{"error": f"Error creating feed: {str(e)}"}
+        return {"error": f"Error creating feed: {str(e)}"}
 
-#Lister tous les flux RSS
 @app.get("/feeds")
 async def get_feeds():
     try:
         from database import SessionLocal
         from models import Feed
 
-        db= SessionLocal()
+        db = SessionLocal()
         feeds = db.query(Feed).all()    
         db.close()
 
@@ -180,7 +258,6 @@ async def get_feeds():
     except Exception as e:
         return {"error": f"Error fetching feeds: {str(e)}"}
 
-#Lister les flux d'un utilisateur spécifique
 @app.get("/users/{user_id}/feeds")
 async def get_user_feeds(user_id: int):
     try:
@@ -188,11 +265,9 @@ async def get_user_feeds(user_id: int):
         from models import Feed
 
         db = SessionLocal()
-
         try:
             feeds = db.query(Feed).filter(Feed.owner_id == user_id).all()
             
-            # Construire la réponse avec détails
             feeds_list = []
             for feed in feeds:
                 feeds_list.append({
@@ -209,99 +284,182 @@ async def get_user_feeds(user_id: int):
                 "feeds_count": len(feeds),
                 "feeds": feeds_list
             }
-
         finally:
             db.close()
-
     except Exception as e:
-        return{"error": f"Error fetching user feeds: {str(e)}"}
+        return {"error": f"Error fetching user feeds: {str(e)}"}
 
-
-#Récupérer et stocker les articles du flux - récupère TOUS les articles
-@app.post("/feeds/{feed_id}/fetch-articles")
-async def fetch_articles(feed_id: int):
+@app.post("/users/{user_id}/fetch-all-articles")
+async def fetch_all_user_articles(user_id: int):
     try:
         from database import SessionLocal
         from models import Feed, Article
         import feedparser
+        from datetime import datetime
 
         db = SessionLocal()
+        total_articles_added = 0
+        total_articles_updated = 0
+        feeds_processed = 0
 
         try:
-            feed = db.query(Feed).filter(Feed.id == feed_id).first()
-            if not feed:
-                return {"error": "Feed not found"}
+            # Récupérer tous les flux de l'utilisateur
+            user_feeds = db.query(Feed).filter(Feed.owner_id == user_id, Feed.is_active == True).all()
             
-            rss_feed = feedparser.parse(feed.url)
-            articles_added = 0
+            if not user_feeds:
+                user_feeds = db.query(Feed).filter(Feed.is_active == True).all()
+            
+            for feed in user_feeds:
+                try:
+                    rss_feed = feedparser.parse(feed.url)
+                    articles_added = 0
+                    articles_updated = 0
 
-            # Récupérer TOUS les articles du flux - en ordre inverse pour avoir les plus récents d'abord
-            for entry in reversed(rss_feed.entries):
-                link = entry.get("link", "")
-                if link:
-                    existing = db.query(Article).filter(Article.link == link).first()
-                    if not existing:
-                        new_article = Article(
-                            title=entry.get("title", "Sans Titre"),
-                            link=link,
-                            published=entry.get("published", ""),
-                            author=entry.get("author", ""),
-                            summary=entry.get("summary", "")[:500] if entry.get("summary") else "",
-                            feed_id=feed_id
-                        )
-                        db.add(new_article)
-                        articles_added += 1
+                    for entry in reversed(rss_feed.entries):
+                        link = entry.get("link", "")
+                        if link:
+                            existing = db.query(Article).filter(Article.link == link).first()
+                            if not existing:
+                                new_article = Article(
+                                    title=entry.get("title", "Sans Titre"),
+                                    link=link,
+                                    published=entry.get("published", ""),
+                                    author=entry.get("author", ""),
+                                    summary=entry.get("summary", "")[:500] if entry.get("summary") else "",
+                                    feed_id=feed.id
+                                )
+                                db.add(new_article)
+                                articles_added += 1
+                            else:
+                                existing.title = entry.get("title", existing.title)
+                                existing.published = entry.get("published", existing.published)
+                                existing.summary = entry.get("summary", existing.summary)[:500] if entry.get("summary") else existing.summary
+                                articles_updated += 1
+
+                    feed.last_updated = datetime.utcnow()
+                    total_articles_added += articles_added
+                    total_articles_updated += articles_updated
+                    feeds_processed += 1
+                    
+                except Exception:
+                    continue
+
             db.commit()
+            
+            final_message = f"Synchronisation terminée ! {feeds_processed} flux traités, {total_articles_added} nouveaux articles, {total_articles_updated} mis à jour"
 
             return {
-                "message": f"{articles_added} articles added for feed '{feed.title}'",
-                "feed_id" : feed_id,
-                "articles_added": articles_added
+                "message": final_message,
+                "user_id": user_id,
+                "feeds_processed": feeds_processed,
+                "total_articles_added": total_articles_added,
+                "total_articles_updated": total_articles_updated
             }
         finally:
             db.close()
     except Exception as e:
-        return {"error": f"Error fetching articles: {str(e)}"}        
+        return {"error": f"Error fetching all user articles: {str(e)}"}
 
-#Lister les articles d'un flux AVEC PAGINATION
-@app.get("/feeds/{feed_id}/articles")
-async def get_articles(feed_id: int, page: int = 1, per_page: int = 20):
+@app.get("/users/{user_id}/articles")
+async def get_user_articles(user_id: int, page: int = 1, per_page: int = 20):
     try:
         from database import SessionLocal
         from models import Feed, Article
 
         db = SessionLocal()
-
         try:
-            #Vérif du flux qui existe
-            feed = db.query(Feed).filter(Feed.id == feed_id).first()
-            if not feed:
-                return{"error": "Feed not found"}
+            # Récupérer les flux de l'utilisateur
+            user_feed_ids = db.query(Feed.id).filter(Feed.owner_id == user_id).all()
+            user_feed_ids = [feed_id[0] for feed_id in user_feed_ids]
             
-            # Calcul de l'offset pour la pagination
-            offset = (page - 1) * per_page
+            # Si l'utilisateur n'a pas de flux, afficher tous les articles
+            if not user_feed_ids:
+                all_articles = db.query(Article).all()
+                
+                if not all_articles:
+                    return {
+                        "user_id": user_id,
+                        "pagination": {
+                            "current_page": page,
+                            "per_page": per_page,
+                            "total_articles": 0,
+                            "total_pages": 0,
+                            "has_next": False,
+                            "has_previous": False
+                        },
+                        "articles": []
+                    }
+                
+                # Ajouter les informations du flux
+                for article in all_articles:
+                    if not hasattr(article, 'feed') or article.feed is None:
+                        article.feed = db.query(Feed).filter(Feed.id == article.feed_id).first()
+                
+                # Tri chronologique
+                all_articles.sort(key=get_sort_key, reverse=True)
+                
+                # Pagination
+                total_articles = len(all_articles)
+                total_pages = (total_articles + per_page - 1) // per_page
+                start_idx = (page - 1) * per_page
+                end_idx = start_idx + per_page
+                articles = all_articles[start_idx:end_idx]
+
+                return {
+                    "user_id": user_id,
+                    "pagination": {
+                        "current_page": page,
+                        "per_page": per_page,
+                        "total_articles": total_articles,
+                        "total_pages": total_pages,
+                        "has_next": page < total_pages,
+                        "has_previous": page > 1
+                    },
+                    "articles": [
+                        {
+                            "id": article.id,
+                            "title": article.title,
+                            "link": article.link,
+                            "published": format_date_for_display(article.published) if article.published else article.created_at.strftime("%d/%m/%Y %H:%M"),
+                            "author": article.author,
+                            "summary": article.summary[:200] + "..." if len(article.summary) > 200 else article.summary,
+                            "is_read": article.is_read,
+                            "is_favorite": article.is_favorite,
+                            "created_at": article.created_at.isoformat(),
+                            "feed": {
+                                "id": article.feed.id,
+                                "title": article.feed.title,
+                                "url": article.feed.url
+                            } if article.feed else {
+                                "id": article.feed_id,
+                                "title": "Flux inconnu",
+                                "url": ""
+                            }
+                        }
+                        for article in articles
+                    ]
+                }
             
-            # Récupérer TOUS les articles du flux sans ordre particulier
-            all_articles = db.query(Article).filter(Article.feed_id == feed_id).all()
+            # Récupérer les articles des flux de l'utilisateur
+            all_articles = db.query(Article).filter(Article.feed_id.in_(user_feed_ids)).all()
             
-            # Trier en Python par date de publication (format string)
-            all_articles.sort(key=lambda x: x.published if x.published else x.created_at.isoformat(), reverse=True)
+            # Ajouter les informations du flux
+            for article in all_articles:
+                if not hasattr(article, 'feed') or article.feed is None:
+                    article.feed = db.query(Feed).filter(Feed.id == article.feed_id).first()
             
-            # Calculer la pagination manuellement
+            # Tri chronologique
+            all_articles.sort(key=get_sort_key, reverse=True)
+            
+            # Pagination
             total_articles = len(all_articles)
             total_pages = (total_articles + per_page - 1) // per_page
-            
-            # Découper pour la page demandée
             start_idx = (page - 1) * per_page
             end_idx = start_idx + per_page
             articles = all_articles[start_idx:end_idx]
 
             return {
-                "feed": {
-                    "id": feed.id,
-                    "title": feed.title,
-                    "url": feed.url
-                },
+                "user_id": user_id,
                 "pagination": {
                     "current_page": page,
                     "per_page": per_page,
@@ -315,12 +473,21 @@ async def get_articles(feed_id: int, page: int = 1, per_page: int = 20):
                         "id": article.id,
                         "title": article.title,
                         "link": article.link,
-                        "published": article.published if article.published else article.created_at.isoformat(),
+                        "published": format_date_for_display(article.published) if article.published else article.created_at.strftime("%d/%m/%Y %H:%M"),
                         "author": article.author,
                         "summary": article.summary[:200] + "..." if len(article.summary) > 200 else article.summary,
                         "is_read": article.is_read,
                         "is_favorite": article.is_favorite,
-                        "created_at": article.created_at.isoformat()
+                        "created_at": article.created_at.isoformat(),
+                        "feed": {
+                            "id": article.feed.id,
+                            "title": article.feed.title,
+                            "url": article.feed.url
+                        } if article.feed else {
+                            "id": article.feed_id,
+                            "title": "Flux inconnu",
+                            "url": ""
+                        }
                     }
                     for article in articles
                 ]
@@ -328,143 +495,26 @@ async def get_articles(feed_id: int, page: int = 1, per_page: int = 20):
         finally:
             db.close()
     except Exception as e:
-        return {"error": f"Error fetching articles: {str(e)}"}
+        return {"error": f"Error fetching user articles: {str(e)}"}
 
-#Modèle pour l'inscription utilisateur
-class UserCreate(BaseModel):
-    username: str
-    email: str
-    password: str
-
-#Modèle pour la connexion 
-class UserLogin(BaseModel):
-    username: str
-    password: str
-
-#connexion utilisateur
-@app.post("/login")
-async def login(user_data: UserLogin):
+@app.get("/users/{user_id}/articles/filter")
+async def filter_user_articles(user_id: int, page: int = 1, per_page: int = 20, read: bool = None, favorite: bool = None, search: str = None, days: int = None, feed_id: int = None):
     try:
         from database import SessionLocal
-        from models import User
-        from auth import verify_password
-
-        db = SessionLocal()
-
-        try:
-            #trouver l'utilisateur
-            user = db.query(User).filter(User.username == user_data.username).first()
-            if not user:
-                return{"error": "Invalid username"}
-            
-            # Vérifier le mot de passe
-            if not verify_password(user_data.password, user.hashed_password):
-                return{"error": "Invalid password"}
-            
-            return{"message": f"Welcome {user.username}!", "user_id": user.id}
-        
-        finally:
-            db.close() 
-
-    except Exception as e:
-        return{"error": f"Login failed: {str(e)}"}
-
-#Inscription utilisateur
-@app.post("/register")
-async def register(user_data: UserCreate):
-    try:
-        from database import SessionLocal
-        from models import User
-        from auth import hash_password
-
-        db = SessionLocal()
-
-        try:
-            #Vérifier si l'utilisateur existe 
-            existing = db.query(User).filter(User.username == user_data.username).first()
-            if existing:
-                return {"error": "Username already exists"}
-            
-            #enregistrement de l'utilisateur 
-            hashed_pwd = hash_password(user_data.password)
-            new_user = User(
-                username=user_data.username,
-                email = user_data.email,
-                hashed_password=hashed_pwd
-            )
-
-            db.add(new_user)
-            db.commit()
-
-            return{"message": f"User {user_data.username} created sucessfully"}
-        
-        finally: 
-            db.close()
-
-    except Exception as e:
-       return{"error": f"Registration failed: {str(e)}"}
-    
-#permet de marquer un article lu ou non lu    
-@app.patch("/articles/{article_id}/read")
-async def toggle_article_read(article_id: int, read_status: bool = True):
-    try:
-        from database import SessionLocal
-        from models import Article
-
-        db = SessionLocal()
-
-        try:
-            article =  db.query(Article).filter(Article.id == article_id).first()
-            if not article :
-                return {"error" : "Article not found"}
-            article.is_read = read_status
-            db.commit()
-
-            return {"message": "Article status updated", "article_id": article_id, "is_read": read_status}
-        
-        finally:
-            db.close()
-
-    except Exception as e:
-        return {"error": f"Error : {str(e)}"}
-    
-#marqué un article en favori
-@app.patch("/articles/{article_id}/favorite")
-async def toggle_article_favorite(article_id: int, favorite_status: bool = True):
-    try:
-        from database import SessionLocal
-        from models import Article
-
-        db = SessionLocal()
-
-        try:
-            article = db.query(Article).filter(Article.id == article_id).first()
-            if not article: 
-                return {"error" : "Article not found"}
-            
-            article.is_favorite = favorite_status
-            db.commit()
-
-            return {"message": "Artcile favorite status updated", "article_id": article_id, "is_favorite": favorite_status}
-        
-        finally: 
-            db.close()
-
-    except Exception as e: 
-        return {"error": f"Error: {str(e)}"}
-
-# Route de filtrage AVEC PAGINATION
-@app.get("/feeds/{feed_id}/articles/filter")
-async def filter_articles(feed_id: int, page: int = 1, per_page: int = 20, read: bool = None, favorite: bool = None, search: str = None, days: int = None):
-    try:
-        from database import SessionLocal
-        from models import Article 
+        from models import Feed, Article 
         from datetime import datetime, timedelta
 
         db = SessionLocal()
-
         try:
-            query = db.query(Article).filter(Article.feed_id == feed_id)
+            # Vérifier les flux de l'utilisateur
+            user_feed_ids = db.query(Feed.id).filter(Feed.owner_id == user_id).all()
+            user_feed_ids = [feed_id_tuple[0] for feed_id_tuple in user_feed_ids]
+            
+            # Requête de base
+            if not user_feed_ids:
+                query = db.query(Article)
+            else:
+                query = db.query(Article).filter(Article.feed_id.in_(user_feed_ids))
             
             # Application des filtres
             if read is not None: 
@@ -482,25 +532,31 @@ async def filter_articles(feed_id: int, page: int = 1, per_page: int = 20, read:
             if days is not None:
                 cutoff_date = datetime.utcnow() - timedelta(days=days)
                 query = query.filter(Article.created_at >= cutoff_date)
+            
+            if feed_id is not None:
+                query = query.filter(Article.feed_id == feed_id)
 
-            # Récupérer tous les articles et les trier en Python
+            # Récupérer et trier les articles
             all_filtered_articles = query.all()
             
-            # Trier par date de publication (string) en ordre décroissant
-            all_filtered_articles.sort(key=lambda x: x.published if x.published else x.created_at.isoformat(), reverse=True)
+            # Ajouter les informations du flux
+            for article in all_filtered_articles:
+                if not hasattr(article, 'feed') or article.feed is None:
+                    article.feed = db.query(Feed).filter(Feed.id == article.feed_id).first()
             
-            # Calculer la pagination manuellement
+            # Tri chronologique
+            all_filtered_articles.sort(key=get_sort_key, reverse=True)
+            
+            # Pagination
             total_articles = len(all_filtered_articles)
             total_pages = (total_articles + per_page - 1) // per_page
-            
-            # Découper pour la page demandée
             start_idx = (page - 1) * per_page
             end_idx = start_idx + per_page
             articles = all_filtered_articles[start_idx:end_idx]
 
             return {
-                "feed_id": feed_id,
-                "filters": {"read": read, "favorite": favorite, "search": search, "days": days},
+                "user_id": user_id,
+                "filters": {"read": read, "favorite": favorite, "search": search, "days": days, "feed_id": feed_id},
                 "pagination": {
                     "current_page": page,
                     "per_page": per_page,
@@ -514,22 +570,30 @@ async def filter_articles(feed_id: int, page: int = 1, per_page: int = 20, read:
                         "id": article.id,
                         "title": article.title,
                         "link": article.link,
-                        "published": article.published if article.published else article.created_at.isoformat(),
+                        "published": format_date_for_display(article.published) if article.published else article.created_at.strftime("%d/%m/%Y %H:%M"),
+                        "author": article.author,
                         "summary": article.summary[:200] + "..." if len(article.summary) > 200 else article.summary,
                         "is_read": article.is_read,
                         "is_favorite": article.is_favorite,
-                        "created_at": article.created_at.isoformat()
+                        "created_at": article.created_at.isoformat(),
+                        "feed": {
+                            "id": article.feed.id,
+                            "title": article.feed.title,
+                            "url": article.feed.url
+                        } if article.feed else {
+                            "id": article.feed_id,
+                            "title": "Flux inconnu",
+                            "url": ""
+                        }
                     }
                     for article in articles
                 ]
             }
         finally: 
             db.close()
-
     except Exception as e:
-        return {"error": f"Erreur dans le filtrage des articles : {str(e)}"}
+        return {"error": f"Erreur dans le filtrage des articles utilisateur : {str(e)}"}
 
-# Route de refresh pour récupérer TOUS les nouveaux articles
 @app.post("/feeds/{feed_id}/refresh")
 async def refresh_feed(feed_id: int):
     try:
@@ -539,30 +603,27 @@ async def refresh_feed(feed_id: int):
         from datetime import datetime
 
         db = SessionLocal()
-
         try:
             feed = db.query(Feed).filter(Feed.id == feed_id).first()
             if not feed:
-                return {"error": "Feed not found"}
+                raise HTTPException(status_code=404, detail="Feed not found")
             
             rss_feed = feedparser.parse(feed.url)
-
             articles_added = 0
             articles_updated = 0
 
-            # Traiter TOUS les articles du flux - en ordre inverse
-            for entry in reversed(rss_feed.entries):
+            for entry in rss_feed.entries:
                 link = entry.get("link", "")
                 if link:
                     existing = db.query(Article).filter(Article.link == link).first()
                     if not existing:
-                        new_article = Article (
-                            title=entry.get("title", "Sans titre"),
+                        new_article = Article(
+                            title=entry.get("title", "Sans Titre"),
                             link=link,
                             published=entry.get("published", ""),
                             author=entry.get("author", ""),
                             summary=entry.get("summary", "")[:500] if entry.get("summary") else "",
-                            feed_id=feed_id
+                            feed_id=feed.id
                         )
                         db.add(new_article)
                         articles_added += 1
@@ -574,19 +635,112 @@ async def refresh_feed(feed_id: int):
 
             feed.last_updated = datetime.utcnow()
             db.commit()
-
+            
+            message = f"Flux '{feed.title}' actualisé: {articles_added} nouveaux articles, {articles_updated} mis à jour"
+            
             return {
-                    "message": f"Flux actualisé ! {articles_added} nouveaux articles, {articles_updated} mis à jour",
-                    "articles_added": articles_added,
-                    "articles_updated": articles_updated,
-                    "last_updated": feed.last_updated.isoformat()
-                    }
-                
+                "message": message,
+                "feed_id": feed_id,
+                "articles_added": articles_added,
+                "articles_updated": articles_updated
+            }
         finally:
             db.close()
-            
     except Exception as e:
-        return{"error": f"Erreur de rafraichissement du flux: {str(e)}"}
+        raise HTTPException(status_code=500, detail=f"Erreur lors de l'actualisation: {str(e)}")
+
+@app.post("/login")
+async def login(user_data: UserLogin):
+    try:
+        from database import SessionLocal
+        from models import User
+        from auth import verify_password
+
+        db = SessionLocal()
+        try:
+            user = db.query(User).filter(User.username == user_data.username).first()
+            if not user:
+                return {"error": "Invalid username"}
+            
+            if not verify_password(user_data.password, user.hashed_password):
+                return {"error": "Invalid password"}
+            
+            return {"message": f"Welcome {user.username}!", "user_id": user.id}
+        finally:
+            db.close() 
+    except Exception as e:
+        return {"error": f"Login failed: {str(e)}"}
+
+@app.post("/register")
+async def register(user_data: UserCreate):
+    try:
+        from database import SessionLocal
+        from models import User
+        from auth import hash_password
+
+        db = SessionLocal()
+        try:
+            existing = db.query(User).filter(User.username == user_data.username).first()
+            if existing:
+                return {"error": "Username already exists"}
+            
+            hashed_pwd = hash_password(user_data.password)
+            new_user = User(
+                username=user_data.username,
+                email=user_data.email,
+                hashed_password=hashed_pwd
+            )
+
+            db.add(new_user)
+            db.commit()
+
+            return {"message": f"User {user_data.username} created successfully"}
+        finally: 
+            db.close()
+    except Exception as e:
+       return {"error": f"Registration failed: {str(e)}"}
+    
+@app.patch("/articles/{article_id}/read")
+async def toggle_article_read(article_id: int, read_status: bool = True):
+    try:
+        from database import SessionLocal
+        from models import Article
+
+        db = SessionLocal()
+        try:
+            article = db.query(Article).filter(Article.id == article_id).first()
+            if not article:
+                return {"error": "Article not found"}
+            
+            article.is_read = read_status
+            db.commit()
+
+            return {"message": "Article status updated", "article_id": article_id, "is_read": read_status}
+        finally:
+            db.close()
+    except Exception as e:
+        return {"error": f"Error: {str(e)}"}
+    
+@app.patch("/articles/{article_id}/favorite")
+async def toggle_article_favorite(article_id: int, favorite_status: bool = True):
+    try:
+        from database import SessionLocal
+        from models import Article
+
+        db = SessionLocal()
+        try:
+            article = db.query(Article).filter(Article.id == article_id).first()
+            if not article: 
+                return {"error": "Article not found"}
+            
+            article.is_favorite = favorite_status
+            db.commit()
+
+            return {"message": "Article favorite status updated", "article_id": article_id, "is_favorite": favorite_status}
+        finally: 
+            db.close()
+    except Exception as e: 
+        return {"error": f"Error: {str(e)}"}
 
 if __name__ == "__main__":
     import uvicorn
