@@ -568,33 +568,28 @@ async def filter_user_articles(user_id: int, page: int = 1, per_page: int = 20, 
             if feed_id is not None:
                 query = query.filter(Article.feed_id == feed_id)
 
-            # 🆕 NOUVEAU : Filtrage par tags CORRIGÉ
+            # Filtrage par tags
             if tags:
-                # Recherche flexible et robuste des feeds avec ce tag
                 feeds_with_tag = db.query(Feed.id).filter(
                     or_(
-                        Feed.tags.ilike(f"%{tags}%"),           # Recherche générale
-                        Feed.tags.ilike(f"{tags},%"),           # Tag au début suivi d'une virgule
-                        Feed.tags.ilike(f"%, {tags},%"),        # Tag au milieu avec espaces
-                        Feed.tags.ilike(f"%, {tags}"),          # Tag à la fin après virgule et espace
-                        Feed.tags == tags                       # Correspondance exacte
+                        Feed.tags.ilike(f"%{tags}%"),
+                        Feed.tags.ilike(f"{tags},%"),
+                        Feed.tags.ilike(f"%, {tags},%"),
+                        Feed.tags.ilike(f"%, {tags}"),
+                        Feed.tags == tags
                     )
                 ).all()
                 
                 feed_ids_with_tag = [f[0] for f in feeds_with_tag]
                 
                 if feed_ids_with_tag:
-                    # Si on filtre déjà par user_feed_ids, on fait l'intersection
                     if not user_feed_ids:
-                        # Pas de restriction utilisateur, on prend tous les feeds avec ce tag
                         query = query.filter(Article.feed_id.in_(feed_ids_with_tag))
                     else:
-                        # On fait l'intersection : flux de l'utilisateur ET flux avec ce tag
                         intersection = list(set(user_feed_ids) & set(feed_ids_with_tag))
                         if intersection:
                             query = query.filter(Article.feed_id.in_(intersection))
                         else:
-                            # Aucun flux de l'utilisateur n'a ce tag
                             return {
                                 "user_id": user_id,
                                 "filters": {"read": read, "favorite": favorite, "search": search, "days": days, "feed_id": feed_id, "tags": tags},
@@ -609,7 +604,6 @@ async def filter_user_articles(user_id: int, page: int = 1, per_page: int = 20, 
                                 "articles": []
                             }
                 else:
-                    # Aucun feed avec ce tag, retourner une liste vide
                     return {
                         "user_id": user_id,
                         "filters": {"read": read, "favorite": favorite, "search": search, "days": days, "feed_id": feed_id, "tags": tags},
@@ -827,6 +821,124 @@ async def toggle_article_favorite(article_id: int, favorite_status: bool = True)
             db.close()
     except Exception as e: 
         return {"error": f"Error: {str(e)}"}
+
+# 🆕 ENDPOINT D'EXPORT
+@app.get("/users/{user_id}/export/{format}")
+async def export_user_feeds(user_id: int, format: str):
+    """Export des flux utilisateur en JSON, CSV ou OPML"""
+    try:
+        from database import SessionLocal
+        from models import Feed
+        import json
+        import csv
+        from io import StringIO
+        from datetime import datetime
+
+        if format not in ['json', 'csv', 'opml']:
+            raise HTTPException(status_code=400, detail="Format non supporté. Utilisez: json, csv, opml")
+
+        db = SessionLocal()
+        try:
+            # Récupérer les flux de l'utilisateur
+            user_feeds = db.query(Feed).filter(Feed.owner_id == user_id).all()
+            
+            if not user_feeds:
+                raise HTTPException(status_code=404, detail="Aucun flux trouvé pour cet utilisateur")
+
+            if format == 'json':
+                # Export JSON
+                feeds_data = []
+                for feed in user_feeds:
+                    feeds_data.append({
+                        "title": feed.title,
+                        "url": feed.url,
+                        "description": feed.description or "",
+                        "tags": feed.tags or "",
+                        "update_frequency": feed.update_frequency or 60,
+                        "is_active": feed.is_active,
+                        "created_at": feed.created_at.isoformat(),
+                        "last_updated": feed.last_updated.isoformat() if feed.last_updated else None
+                    })
+                
+                export_data = {
+                    "export_date": datetime.utcnow().isoformat(),
+                    "user_id": user_id,
+                    "total_feeds": len(feeds_data),
+                    "feeds": feeds_data
+                }
+                
+                return {
+                    "format": "json",
+                    "filename": f"suprss_export_{user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                    "data": json.dumps(export_data, indent=2, ensure_ascii=False)
+                }
+
+            elif format == 'csv':
+                # Export CSV
+                output = StringIO()
+                writer = csv.writer(output)
+                
+                # En-têtes CSV
+                writer.writerow(['Title', 'URL', 'Description', 'Tags', 'Update_Frequency', 'Is_Active', 'Created_At', 'Last_Updated'])
+                
+                # Données
+                for feed in user_feeds:
+                    writer.writerow([
+                        feed.title,
+                        feed.url,
+                        feed.description or "",
+                        feed.tags or "",
+                        feed.update_frequency or 60,
+                        feed.is_active,
+                        feed.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+                        feed.last_updated.strftime('%Y-%m-%d %H:%M:%S') if feed.last_updated else ""
+                    ])
+                
+                return {
+                    "format": "csv",
+                    "filename": f"suprss_export_{user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    "data": output.getvalue()
+                }
+
+            elif format == 'opml':
+                # Export OPML (format standard pour les flux RSS)
+                opml_lines = [
+                    '<?xml version="1.0" encoding="UTF-8"?>',
+                    '<opml version="2.0">',
+                    '  <head>',
+                    f'    <title>SUPRSS Export - User {user_id}</title>',
+                    f'    <dateCreated>{datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")}</dateCreated>',
+                    f'    <docs>http://www.opml.org/spec2</docs>',
+                    '  </head>',
+                    '  <body>'
+                ]
+                
+                for feed in user_feeds:
+                    # Échapper les caractères XML
+                    title = feed.title.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
+                    url = feed.url.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
+                    description = (feed.description or "").replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
+                    
+                    opml_lines.append(f'    <outline type="rss" text="{title}" title="{title}" xmlUrl="{url}" description="{description}" />')
+                
+                opml_lines.extend([
+                    '  </body>',
+                    '</opml>'
+                ])
+                
+                return {
+                    "format": "opml",
+                    "filename": f"suprss_export_{user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.opml",
+                    "data": '\n'.join(opml_lines)
+                }
+
+        finally:
+            db.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur lors de l'export: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

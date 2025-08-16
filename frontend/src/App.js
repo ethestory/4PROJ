@@ -174,47 +174,6 @@ function App() {
     }
   };
 
-  const filterArticles = async (page = 1) => {
-    if (!currentUserId) {
-      setMessage('Erreur: Aucun utilisateur connecté');
-      return;
-    }
-
-    try {
-      let url = `http://localhost:8000/users/${currentUserId}/articles/filter`;
-      let params = [`page=${page}`, 'per_page=20'];
-
-      if (filters.read !== null) {
-        params.push(`read=${filters.read}`);
-      }
-      if (filters.favorite !== null) {
-        params.push(`favorite=${filters.favorite}`);
-      }
-      if (filters.search) {
-        params.push(`search=${encodeURIComponent(filters.search)}`);
-      }
-      if (filters.days !== null) {
-        params.push(`days=${filters.days}`);
-      }
-      if (filters.feed_id !== null) {
-        params.push(`feed_id=${filters.feed_id}`);
-      }
-      if (filters.tags) {
-        params.push(`tags=${encodeURIComponent(filters.tags)}`);
-      }
-      
-      url += '?' + params.join('&');
-      
-      const response = await axios.get(url);
-      setArticles(response.data.articles || []);
-      setPagination(response.data.pagination || {});
-      setCurrentPage(page);
-      setMessage(`Filtrage appliqué - Page ${page} - ${response.data.pagination?.total_articles || 0} articles trouvés`);
-    } catch (error) {
-      setMessage('Erreur lors du filtrage');
-    }
-  };
-
   // 🔧 FONCTION UNIQUE POUR APPLIQUER LES FILTRES
   const applyFilters = async (customFilters = null, page = 1) => {
     if (!currentUserId) {
@@ -357,6 +316,41 @@ function App() {
       refreshCurrentView();
     } catch (error) {
       setMessage('Erreur lors de la mise à jour des favoris');
+    }
+  };
+
+  // 🆕 FONCTION D'EXPORT DES FLUX
+  const exportFeeds = async (format) => {
+    if (!currentUserId) {
+      setMessage('Erreur: Aucun utilisateur connecté');
+      return;
+    }
+
+    try {
+      setMessage(`Export ${format.toUpperCase()} en cours...`);
+      
+      const response = await axios.get(`http://localhost:8000/users/${currentUserId}/export/${format}`);
+      
+      // Créer et télécharger le fichier
+      const blob = new Blob([response.data.data], { 
+        type: format === 'json' ? 'application/json' : 
+              format === 'csv' ? 'text/csv' : 
+              'application/xml'
+      });
+      
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = response.data.filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+      
+      setMessage(`✅ Export ${format.toUpperCase()} téléchargé : ${response.data.filename}`);
+      
+    } catch (error) {
+      setMessage(`❌ Erreur lors de l'export ${format.toUpperCase()} : ` + (error.response?.data?.detail || error.message));
     }
   };
 
@@ -625,10 +619,36 @@ function App() {
               </button>
               <button 
                 onClick={fixExistingFeeds}
-                style={{padding: '10px', backgroundColor: '#ffc107', color: 'black', border: 'none'}}
+                style={{padding: '10px', backgroundColor: '#ffc107', color: 'black', border: 'none', marginRight: '10px'}}
               >
                 🔧 Corriger les flux existants
               </button>
+              
+              {/* 🆕 BOUTONS D'EXPORT */}
+              <div style={{display: 'inline-block', marginLeft: '20px'}}>
+                <span style={{marginRight: '10px', fontWeight: 'bold', color: '#666'}}>📤 Export:</span>
+                <button 
+                  onClick={() => exportFeeds('json')}
+                  style={{padding: '8px 12px', backgroundColor: '#17a2b8', color: 'white', border: 'none', marginRight: '5px', borderRadius: '4px'}}
+                  title="Exporter au format JSON"
+                >
+                  JSON
+                </button>
+                <button 
+                  onClick={() => exportFeeds('csv')}
+                  style={{padding: '8px 12px', backgroundColor: '#28a745', color: 'white', border: 'none', marginRight: '5px', borderRadius: '4px'}}
+                  title="Exporter au format CSV"
+                >
+                  CSV
+                </button>
+                <button 
+                  onClick={() => exportFeeds('opml')}
+                  style={{padding: '8px 12px', backgroundColor: '#6f42c1', color: 'white', border: 'none', borderRadius: '4px'}}
+                  title="Exporter au format OPML (standard RSS)"
+                >
+                  OPML
+                </button>
+              </div>
             </div>
             
             {feeds.length > 0 ? (
