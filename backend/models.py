@@ -23,6 +23,8 @@ class Feed(Base):
     title = Column(String(200), nullable=False)
     url = Column(String(500), nullable=False)
     description = Column(Text, nullable=True)
+    tags = Column(String(500), nullable=True)  # 🆕 NOUVEAU : Tags séparés par des virgules
+    update_frequency = Column(Integer, default=60)  # 🆕 NOUVEAU : Fréquence en minutes (défaut: 1h)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     last_updated = Column(DateTime, nullable=True)

@@ -11,14 +11,21 @@ function App() {
   const [currentUserId, setCurrentUserId] = useState(null);
   const [loginData, setLoginData] = useState({ username: '', password: '' });
   const [registerData, setRegisterData] = useState({ username: '', email: '', password: '' });
-  const [newFeed, setNewFeed] = useState({ title: '', url: '', description: '' });
+  const [newFeed, setNewFeed] = useState({ 
+    title: '', 
+    url: '', 
+    description: '',
+    tags: '',
+    update_frequency: 60
+  });
   const [articles, setArticles] = useState([]);
   const [filters, setFilters] = useState({
     read: null,
     favorite: null,
     search: '',
     days: null,
-    feed_id: null
+    feed_id: null,
+    tags: ''
   });
   const [pagination, setPagination] = useState({
     current_page: 1,
@@ -29,6 +36,7 @@ function App() {
     has_previous: false
   });
   const [currentPage, setCurrentPage] = useState(1);
+  const [showTagDropdown, setShowTagDropdown] = useState(false);
 
   const handleRegister = async () => {
     try {
@@ -86,6 +94,16 @@ function App() {
     }
   };
 
+  const fixExistingFeeds = async () => {
+    try {
+      const response = await axios.post('http://localhost:8000/fix-existing-feeds');
+      setMessage(response.data.message || 'Flux corrigés !');
+      loadFeeds();
+    } catch (error) {
+      setMessage('Erreur lors de la correction des flux');
+    }
+  };
+
   const createFeed = async () => {
     if (!currentUserId) {
       setMessage('Erreur: Aucun utilisateur connecté');
@@ -98,7 +116,7 @@ function App() {
         owner_id: currentUserId
       });
       setMessage('Flux créé avec succès !');
-      setNewFeed({ title: '', url: '', description: '' });
+      setNewFeed({ title: '', url: '', description: '', tags: '', update_frequency: 60 });
       loadFeeds();
     } catch (error) {
       setMessage('Erreur création de flux : ' + (error.response?.data?.error || error.message));
@@ -181,6 +199,9 @@ function App() {
       if (filters.feed_id !== null) {
         params.push(`feed_id=${filters.feed_id}`);
       }
+      if (filters.tags) {
+        params.push(`tags=${encodeURIComponent(filters.tags)}`);
+      }
       
       url += '?' + params.join('&');
       
@@ -194,31 +215,116 @@ function App() {
     }
   };
 
-  const applyFilters = () => {
-    setCurrentPage(1);
-    filterArticles(1);
+  // 🔧 FONCTION UNIQUE POUR APPLIQUER LES FILTRES
+  const applyFilters = async (customFilters = null, page = 1) => {
+    if (!currentUserId) {
+      setMessage('Erreur: Aucun utilisateur connecté');
+      return;
+    }
+
+    // Utiliser les filtres personnalisés ou les filtres actuels
+    const activeFilters = customFilters || filters;
+    
+    console.log('🔍 Application des filtres:', activeFilters);
+    
+    // Vérifier si tous les filtres sont vides
+    const isEmpty = activeFilters.read === null && activeFilters.favorite === null && 
+                   !activeFilters.search && activeFilters.days === null && 
+                   activeFilters.feed_id === null && !activeFilters.tags;
+
+    try {
+      if (isEmpty) {
+        // Charger tous les articles si aucun filtre
+        const response = await axios.get(`http://localhost:8000/users/${currentUserId}/articles?page=${page}&per_page=20`);
+        setArticles(response.data.articles || []);
+        setPagination(response.data.pagination || {});
+        setCurrentPage(page);
+        setMessage(`Articles chargés - Page ${page} - ${response.data.pagination?.total_articles || 0} articles au total`);
+      } else {
+        // Appliquer les filtres
+        let url = `http://localhost:8000/users/${currentUserId}/articles/filter`;
+        let params = [`page=${page}`, 'per_page=20'];
+
+        if (activeFilters.read !== null) {
+          params.push(`read=${activeFilters.read}`);
+        }
+        if (activeFilters.favorite !== null) {
+          params.push(`favorite=${activeFilters.favorite}`);
+        }
+        if (activeFilters.search) {
+          params.push(`search=${encodeURIComponent(activeFilters.search)}`);
+        }
+        if (activeFilters.days !== null) {
+          params.push(`days=${activeFilters.days}`);
+        }
+        if (activeFilters.feed_id !== null) {
+          params.push(`feed_id=${activeFilters.feed_id}`);
+        }
+        if (activeFilters.tags) {
+          params.push(`tags=${encodeURIComponent(activeFilters.tags)}`);
+        }
+        
+        url += '?' + params.join('&');
+        
+        const response = await axios.get(url);
+        setArticles(response.data.articles || []);
+        setPagination(response.data.pagination || {});
+        setCurrentPage(page);
+        setMessage(`Filtrage appliqué - Page ${page} - ${response.data.pagination?.total_articles || 0} articles trouvés`);
+      }
+    } catch (error) {
+      console.error('Erreur filtrage:', error);
+      setMessage('Erreur lors du filtrage: ' + (error.response?.data?.error || error.message));
+    }
   };
 
-  const resetFilters = () => {
-    setFilters({ read: null, favorite: null, search: '', days: null, feed_id: null });
-    setCurrentPage(1);
-    loadAllArticles(1);
+  // 🔧 FONCTION POUR SUPPRIMER UN FILTRE SPÉCIFIQUE (SIMPLIFIÉE)
+  const removeFilter = (filterType) => {
+    const newFilters = { ...filters };
+    
+    switch (filterType) {
+      case 'read':
+        newFilters.read = null;
+        break;
+      case 'favorite':
+        newFilters.favorite = null;
+        break;
+      case 'search':
+        newFilters.search = '';
+        break;
+      case 'days':
+        newFilters.days = null;
+        break;
+      case 'feed_id':
+        newFilters.feed_id = null;
+        break;
+      case 'tags':
+        newFilters.tags = '';
+        break;
+      default:
+        break;
+    }
+    
+    console.log('🗑️ Suppression du filtre:', filterType, 'Nouveaux filtres:', newFilters);
+    
+    // Mettre à jour les filtres et appliquer immédiatement
+    setFilters(newFilters);
+    applyFilters(newFilters, 1);
+  };
+
+  // 🔧 FONCTION POUR SUPPRIMER TOUS LES FILTRES (SIMPLIFIÉE)
+  const resetAllFilters = () => {
+    const emptyFilters = { read: null, favorite: null, search: '', days: null, feed_id: null, tags: '' };
+    setFilters(emptyFilters);
+    applyFilters(emptyFilters, 1);
   };
 
   const refreshCurrentView = () => {
-    if (filters.read !== null || filters.favorite !== null || filters.search || filters.days !== null || filters.feed_id !== null) {
-      filterArticles(currentPage);
-    } else {
-      loadAllArticles(currentPage);
-    }
+    applyFilters(null, currentPage);
   };
 
   const goToPage = (page) => {
-    if (filters.read !== null || filters.favorite !== null || filters.search || filters.days !== null || filters.feed_id !== null) {
-      filterArticles(page);
-    } else {
-      loadAllArticles(page);
-    }
+    applyFilters(null, page);
   };
 
   const goToNextPage = () => {
@@ -295,17 +401,14 @@ function App() {
     }
   };
 
-  // NOUVELLE FONCTION pour formatter les dates de synchronisation
   const formatSyncDate = (dateStr) => {
     if (!dateStr) return '';
     
     try {
-      // Si la date contient T, c'est un format ISO (UTC)
       if (dateStr.includes('T')) {
         const date = new Date(dateStr);
-        // Ajouter 2h pour l'heure française d'été (ou 1h en hiver)
         const now = new Date();
-        const offsetHours = (now.getMonth() >= 3 && now.getMonth() <= 9) ? 2 : 1; // Été/Hiver
+        const offsetHours = (now.getMonth() >= 3 && now.getMonth() <= 9) ? 2 : 1;
         date.setHours(date.getHours() + offsetHours);
         
         return date.toLocaleString('fr-FR', {
@@ -317,12 +420,42 @@ function App() {
         });
       }
       
-      // Sinon, retourner tel quel
       return dateStr;
       
     } catch (e) {
       return dateStr;
     }
+  };
+
+  const formatFrequency = (frequency) => {
+    if (!frequency || frequency === undefined || frequency === null) {
+      return 'Non définie';
+    }
+    
+    switch (frequency) {
+      case 15: return 'Toutes les 15 min';
+      case 30: return 'Toutes les 30 min';
+      case 60: return 'Toutes les heures';
+      case 360: return 'Toutes les 6h';
+      case 720: return 'Toutes les 12h';
+      case 1440: return 'Une fois par jour';
+      default: return `Toutes les ${frequency} min`;
+    }
+  };
+
+  const getAllTags = () => {
+    const allTags = new Set();
+    feeds.forEach(feed => {
+      if (feed.tags && feed.tags.length > 0) {
+        feed.tags.split(',').forEach(tag => {
+          const trimmedTag = tag.trim();
+          if (trimmedTag) {
+            allTags.add(trimmedTag);
+          }
+        });
+      }
+    });
+    return Array.from(allTags).sort();
   };
 
   const PaginationComponent = () => {
@@ -362,14 +495,14 @@ function App() {
             ← Précédent
           </button>
           
-          {startPage > 1 && (
-            <>
+          {startPage > 1 ? (
+            <React.Fragment>
               <button onClick={() => goToPage(1)} style={{ padding: '8px 12px', border: '1px solid #ddd' }}>
                 1
               </button>
-              {startPage > 2 && <span style={{ padding: '8px' }}>...</span>}
-            </>
-          )}
+              {startPage > 2 ? <span style={{ padding: '8px' }}>...</span> : null}
+            </React.Fragment>
+          ) : null}
           
           {pages.map(page => (
             <button
@@ -387,17 +520,17 @@ function App() {
             </button>
           ))}
           
-          {endPage < pagination.total_pages && (
-            <>
-              {endPage < pagination.total_pages - 1 && <span style={{ padding: '8px' }}>...</span>}
+          {endPage < pagination.total_pages ? (
+            <React.Fragment>
+              {endPage < pagination.total_pages - 1 ? <span style={{ padding: '8px' }}>...</span> : null}
               <button 
                 onClick={() => goToPage(pagination.total_pages)} 
                 style={{ padding: '8px 12px', border: '1px solid #ddd' }}
               >
                 {pagination.total_pages}
               </button>
-            </>
-          )}
+            </React.Fragment>
+          ) : null}
           
           <button 
             onClick={goToNextPage} 
@@ -419,7 +552,7 @@ function App() {
   return (
     <div className="App">
       <h1>SUPRSS - Lecteur de flux RSS</h1>
-      {message && <div style={{padding: '10px', background: '#f0f0f0', margin: '10px 0'}}>{message}</div>}
+      {message ? <div style={{padding: '10px', background: '#f0f0f0', margin: '10px 0'}}>{message}</div> : null}
       
       {!isLoggedIn ? (
         <div style={{maxWidth: '400px', margin: '0 auto', padding: '20px'}}>
@@ -486,26 +619,56 @@ function App() {
               <button onClick={loadFeeds} style={{padding: '10px', marginRight: '10px'}}>Charger les flux</button>
               <button 
                 onClick={syncAllFeeds}
-                style={{padding: '10px', backgroundColor: '#28a745', color: 'white', border: 'none'}}
+                style={{padding: '10px', backgroundColor: '#28a745', color: 'white', border: 'none', marginRight: '10px'}}
               >
                 🔄 Synchroniser tous les flux
               </button>
+              <button 
+                onClick={fixExistingFeeds}
+                style={{padding: '10px', backgroundColor: '#ffc107', color: 'black', border: 'none'}}
+              >
+                🔧 Corriger les flux existants
+              </button>
             </div>
             
-            {feeds.length > 0 && (
+            {feeds.length > 0 ? (
               <div>
                 <h3>Mes flux RSS</h3>
                 {feeds.map(feed => (
                   <div key={feed.id} style={{border: '1px solid #ddd', padding: '15px', margin: '10px 0', backgroundColor: '#f8f9fa'}}>
                     <h4 style={{marginTop: '0', marginBottom: '10px'}}>{feed.title}</h4>
                     <p style={{fontSize: '14px', color: '#666', marginBottom: '5px'}}>{feed.url}</p>
-                    {feed.description && <p style={{fontSize: '14px', marginBottom: '10px'}}>{feed.description}</p>}
+                    {feed.description ? <p style={{fontSize: '14px', marginBottom: '10px'}}>{feed.description}</p> : null}
                     
-                    {feed.last_updated && (
+                    {feed.tags && feed.tags.length > 0 ? (
+                      <div style={{marginBottom: '10px'}}>
+                        <span style={{fontSize: '12px', color: '#666', marginRight: '5px'}}>Tags:</span>
+                        {feed.tags.split(',').map((tag, index) => (
+                          <span key={index} style={{
+                            display: 'inline-block',
+                            backgroundColor: '#007bff',
+                            color: 'white',
+                            padding: '2px 8px',
+                            borderRadius: '12px',
+                            fontSize: '11px',
+                            marginRight: '6px',
+                            marginBottom: '5px'
+                          }}>
+                            {tag.trim()}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                    
+                    <p style={{fontSize: '12px', color: '#666', marginBottom: '10px'}}>
+                      Fréquence: {formatFrequency(feed.update_frequency)}
+                    </p>
+                    
+                    {feed.last_updated ? (
                       <p style={{fontSize: '12px', color: '#666', marginBottom: '15px'}}>
                         Dernière synchro : {formatSyncDate(feed.last_updated)}
                       </p>
-                    )}
+                    ) : null}
                     
                     <button 
                       onClick={() => refreshFeed(feed.id)}
@@ -516,7 +679,7 @@ function App() {
                   </div>
                 ))}
               </div>
-            )}
+            ) : null}
           </div>
 
           <div style={{marginBottom: '30px', padding: '20px', border: '1px solid #ddd', backgroundColor: '#f8f9fa'}}>
@@ -540,6 +703,24 @@ function App() {
                 onChange={(e) => setNewFeed({...newFeed, description: e.target.value})}
                 style={{padding: '10px'}}
               />
+              <input 
+                placeholder="Tags (séparés par des virgules, ex: technologie, actualité)" 
+                value={newFeed.tags}
+                onChange={(e) => setNewFeed({...newFeed, tags: e.target.value})}
+                style={{padding: '10px'}}
+              />
+              <select 
+                value={newFeed.update_frequency}
+                onChange={(e) => setNewFeed({...newFeed, update_frequency: parseInt(e.target.value)})}
+                style={{padding: '10px'}}
+              >
+                <option value={15}>Toutes les 15 minutes</option>
+                <option value={30}>Toutes les 30 minutes</option>
+                <option value={60}>Toutes les heures (défaut)</option>
+                <option value={360}>Toutes les 6 heures</option>
+                <option value={720}>Toutes les 12 heures</option>
+                <option value={1440}>Une fois par jour</option>
+              </select>
               <button 
                 onClick={createFeed}
                 style={{padding: '10px', backgroundColor: '#007bff', color: 'white', border: 'none'}}
@@ -561,22 +742,122 @@ function App() {
               </button>
             </div>
             
-            <div style={{padding: '15px', background: '#f9f9f9', margin: '15px 0', border: '1px solid #ddd'}}>
+            {/* 🆕 SECTION FILTRES MODIFIÉE */}
+            <div style={{padding: '20px', background: '#f9f9f9', margin: '15px 0', border: '1px solid #ddd', borderRadius: '8px'}}>
               <h3>🔍 Filtres</h3>
               
-              <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '10px', marginBottom: '15px'}}>
+              <div style={{
+                display: 'grid', 
+                gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', 
+                gap: '15px', 
+                marginBottom: '20px'
+              }}>
+                {/* Recherche */}
                 <input
                   type="text"
                   placeholder="Recherche dans les articles"
                   value={filters.search}
-                  onChange={(e) => setFilters({...filters, search: e.target.value})}
-                  style={{padding: '8px'}}
+                  onChange={(e) => {
+                    const newFilters = {...filters, search: e.target.value};
+                    setFilters(newFilters);
+                    // Application automatique après un délai pour la recherche
+                    setTimeout(() => applyFilters(newFilters, 1), 500);
+                  }}
+                  style={{padding: '10px', borderRadius: '4px', border: '1px solid #ddd'}}
                 />
 
+                {/* Dropdown tags */}
+                <div style={{position: 'relative'}}>
+                  <input
+                    type="text"
+                    placeholder="Filtrer par tags..."
+                    value={filters.tags}
+                    onChange={(e) => {
+                      const newFilters = {...filters, tags: e.target.value};
+                      setFilters(newFilters);
+                      setShowTagDropdown(true);
+                    }}
+                    onFocus={() => setShowTagDropdown(true)}
+                    style={{padding: '10px', width: '100%', borderRadius: '4px', border: '1px solid #ddd'}}
+                  />
+                  
+                  {showTagDropdown && getAllTags().length > 0 ? (
+                    <div style={{
+                      position: 'absolute',
+                      top: '100%',
+                      left: 0,
+                      right: 0,
+                      backgroundColor: 'white',
+                      border: '1px solid #ddd',
+                      borderTop: 'none',
+                      borderRadius: '0 0 4px 4px',
+                      maxHeight: '200px',
+                      overflowY: 'auto',
+                      zIndex: 1000,
+                      boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
+                    }}>
+                      {getAllTags()
+                        .filter(tag => tag.toLowerCase().includes(filters.tags.toLowerCase()))
+                        .map(tag => (
+                        <div
+                          key={tag}
+                          onClick={() => {
+                            const newFilters = {...filters, tags: tag};
+                            setFilters(newFilters);
+                            setShowTagDropdown(false);
+                            setTimeout(() => applyFilters(newFilters, 1), 100);
+                          }}
+                          style={{
+                            padding: '12px 15px',
+                            cursor: 'pointer',
+                            borderBottom: '1px solid #f0f0f0',
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            transition: 'background-color 0.2s ease'
+                          }}
+                          onMouseOver={(e) => e.target.style.backgroundColor = '#f8f9fa'}
+                          onMouseOut={(e) => e.target.style.backgroundColor = 'white'}
+                        >
+                          <span style={{fontWeight: '500'}}>{tag}</span>
+                          <span style={{
+                            fontSize: '12px', 
+                            color: '#666',
+                            backgroundColor: '#e9ecef',
+                            padding: '2px 6px',
+                            borderRadius: '10px'
+                          }}>
+                            {feeds.filter(f => f.tags && f.tags.includes(tag)).length} flux
+                          </span>
+                        </div>
+                      ))}
+                      {getAllTags().filter(tag => tag.toLowerCase().includes(filters.tags.toLowerCase())).length === 0 ? (
+                        <div style={{padding: '12px 15px', color: '#666', fontStyle: 'italic', textAlign: 'center'}}>
+                          Aucun tag trouvé
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  
+                  {/* Overlay pour fermer le dropdown */}
+                  {showTagDropdown ? (
+                    <div 
+                      style={{position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 999}}
+                      onClick={() => setShowTagDropdown(false)}
+                    />
+                  ) : null}
+                </div>
+
+                {/* Autres filtres */}
                 <select
                   value={filters.read === null ? 'all' : filters.read.toString()}
-                  onChange={(e) => setFilters({...filters, read: e.target.value === 'all' ? null : e.target.value === 'true'})}
-                  style={{padding: '8px'}}
+                  onChange={(e) => {
+                    const newValue = e.target.value === 'all' ? null : e.target.value === 'true';
+                    const newFilters = {...filters, read: newValue};
+                    setFilters(newFilters);
+                    setTimeout(() => applyFilters(newFilters, 1), 100);
+                  }}
+                  style={{padding: '10px', borderRadius: '4px', border: '1px solid #ddd'}}
                 >
                   <option value="all">Tous les articles</option>
                   <option value="false">Non lus</option>
@@ -585,8 +866,13 @@ function App() {
 
                 <select
                   value={filters.favorite === null ? 'all' : filters.favorite.toString()}
-                  onChange={(e) => setFilters({...filters, favorite: e.target.value === 'all' ? null : e.target.value === 'true'})}
-                  style={{padding: '8px'}}
+                  onChange={(e) => {
+                    const newValue = e.target.value === 'all' ? null : e.target.value === 'true';
+                    const newFilters = {...filters, favorite: newValue};
+                    setFilters(newFilters);
+                    setTimeout(() => applyFilters(newFilters, 1), 100);
+                  }}
+                  style={{padding: '10px', borderRadius: '4px', border: '1px solid #ddd'}}
                 >
                   <option value="all">Tous</option>
                   <option value="true">Favoris</option>
@@ -595,8 +881,13 @@ function App() {
 
                 <select
                   value={filters.days === null ? 'all' : filters.days.toString()}
-                  onChange={(e) => setFilters({...filters, days: e.target.value === 'all' ? null : parseInt(e.target.value)})}
-                  style={{padding: '8px'}}
+                  onChange={(e) => {
+                    const newValue = e.target.value === 'all' ? null : parseInt(e.target.value);
+                    const newFilters = {...filters, days: newValue};
+                    setFilters(newFilters);
+                    setTimeout(() => applyFilters(newFilters, 1), 100);
+                  }}
+                  style={{padding: '10px', borderRadius: '4px', border: '1px solid #ddd'}}
                 >
                   <option value="all">Toutes les dates</option>
                   <option value="1">Aujourd'hui</option>
@@ -607,8 +898,13 @@ function App() {
 
                 <select
                   value={filters.feed_id === null ? 'all' : filters.feed_id.toString()}
-                  onChange={(e) => setFilters({...filters, feed_id: e.target.value === 'all' ? null : parseInt(e.target.value)})}
-                  style={{padding: '8px'}}
+                  onChange={(e) => {
+                    const newValue = e.target.value === 'all' ? null : parseInt(e.target.value);
+                    const newFilters = {...filters, feed_id: newValue};
+                    setFilters(newFilters);
+                    setTimeout(() => applyFilters(newFilters, 1), 100);
+                  }}
+                  style={{padding: '10px', borderRadius: '4px', border: '1px solid #ddd'}}
                 >
                   <option value="all">Tous les flux</option>
                   {feeds.map(feed => (
@@ -616,15 +912,323 @@ function App() {
                   ))}
                 </select>
               </div>
+
+              {/* Tags rapides */}
+              {getAllTags().length > 0 ? (
+                <div style={{marginBottom: '20px'}}>
+                  <div style={{
+                    display: 'flex', 
+                    flexWrap: 'wrap', 
+                    gap: '10px', 
+                    alignItems: 'center',
+                    padding: '15px',
+                    backgroundColor: 'white',
+                    borderRadius: '6px',
+                    border: '1px solid #e0e0e0'
+                  }}>
+                    <span style={{
+                      fontSize: '13px', 
+                      color: '#666', 
+                      fontWeight: 'bold',
+                      marginRight: '10px',
+                      minWidth: 'fit-content'
+                    }}>
+                      Tags rapides:
+                    </span>
+                    {getAllTags().slice(0, 4).map(tag => (
+                      <button
+                        key={tag}
+                        onClick={() => {
+                          const newFilters = {...filters, tags: tag};
+                          setFilters(newFilters);
+                          setTimeout(() => applyFilters(newFilters, 1), 100);
+                        }}
+                        style={{
+                          padding: '6px 12px',
+                          fontSize: '12px',
+                          border: filters.tags === tag ? '2px solid #007bff' : '1px solid #ccc',
+                          borderRadius: '18px',
+                          backgroundColor: filters.tags === tag ? '#e3f2fd' : 'white',
+                          cursor: 'pointer',
+                          color: filters.tags === tag ? '#007bff' : '#666',
+                          whiteSpace: 'nowrap',
+                          transition: 'all 0.2s ease',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '4px'
+                        }}
+                        onMouseOver={(e) => {
+                          if (filters.tags !== tag) {
+                            e.target.style.backgroundColor = '#f8f9fa';
+                            e.target.style.borderColor = '#007bff';
+                          }
+                        }}
+                        onMouseOut={(e) => {
+                          if (filters.tags !== tag) {
+                            e.target.style.backgroundColor = 'white';
+                            e.target.style.borderColor = '#ccc';
+                          }
+                        }}
+                      >
+                        <span>{tag}</span>
+                        <span style={{
+                          fontSize: '10px',
+                          backgroundColor: filters.tags === tag ? '#007bff' : '#e9ecef',
+                          color: filters.tags === tag ? 'white' : '#666',
+                          padding: '1px 4px',
+                          borderRadius: '8px',
+                          marginLeft: '2px'
+                        }}>
+                          {feeds.filter(f => f.tags && f.tags.includes(tag)).length}
+                        </span>
+                      </button>
+                    ))}
+                    {getAllTags().length > 4 ? (
+                      <span style={{fontSize: '11px', color: '#999', fontStyle: 'italic'}}>
+                        +{getAllTags().length - 4} autres tags
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
               
-              <div>
-                <button onClick={applyFilters} style={{padding: '10px 20px', marginRight: '10px', backgroundColor: '#28a745', color: 'white', border: 'none'}}>
-                  Appliquer les filtres
-                </button>
-                <button onClick={resetFilters} style={{padding: '10px 20px', backgroundColor: '#6c757d', color: 'white', border: 'none'}}>
-                  Réinitialiser
-                </button>
-              </div>
+              {/* 🆕 AFFICHAGE DES FILTRES ACTIFS AVEC SUPPRESSION INDIVIDUELLE */}
+              {(filters.tags || filters.search || filters.read !== null || filters.favorite !== null || filters.days !== null || filters.feed_id !== null) ? (
+                <div style={{
+                  marginBottom: '20px', 
+                  padding: '12px', 
+                  backgroundColor: '#e3f2fd', 
+                  borderRadius: '6px',
+                  border: '1px solid #bbdefb'
+                }}>
+                  <div style={{display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '8px'}}>
+                    <strong style={{color: '#1976d2', marginRight: '10px'}}>Filtres actifs :</strong>
+                    
+                    {filters.tags ? (
+                      <span style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        padding: '4px 8px',
+                        backgroundColor: '#007bff',
+                        color: 'white',
+                        borderRadius: '12px',
+                        fontSize: '12px',
+                        gap: '6px'
+                      }}>
+                        Tag: {filters.tags}
+                        <button
+                          onClick={() => removeFilter('tags')}
+                          style={{
+                            background: 'rgba(255,255,255,0.3)',
+                            border: 'none',
+                            borderRadius: '50%',
+                            width: '16px',
+                            height: '16px',
+                            color: 'white',
+                            cursor: 'pointer',
+                            fontSize: '10px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center'
+                          }}
+                          title="Supprimer ce filtre"
+                        >
+                          ✕
+                        </button>
+                      </span>
+                    ) : null}
+                    
+                    {filters.search ? (
+                      <span style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        padding: '4px 8px',
+                        backgroundColor: '#28a745',
+                        color: 'white',
+                        borderRadius: '12px',
+                        fontSize: '12px',
+                        gap: '6px'
+                      }}>
+                        Recherche: {filters.search}
+                        <button
+                          onClick={() => removeFilter('search')}
+                          style={{
+                            background: 'rgba(255,255,255,0.3)',
+                            border: 'none',
+                            borderRadius: '50%',
+                            width: '16px',
+                            height: '16px',
+                            color: 'white',
+                            cursor: 'pointer',
+                            fontSize: '10px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center'
+                          }}
+                          title="Supprimer ce filtre"
+                        >
+                          ✕
+                        </button>
+                      </span>
+                    ) : null}
+                    
+                    {filters.read !== null ? (
+                      <span style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        padding: '4px 8px',
+                        backgroundColor: '#17a2b8',
+                        color: 'white',
+                        borderRadius: '12px',
+                        fontSize: '12px',
+                        gap: '6px'
+                      }}>
+                        {filters.read ? 'Lus' : 'Non lus'}
+                        <button
+                          onClick={() => removeFilter('read')}
+                          style={{
+                            background: 'rgba(255,255,255,0.3)',
+                            border: 'none',
+                            borderRadius: '50%',
+                            width: '16px',
+                            height: '16px',
+                            color: 'white',
+                            cursor: 'pointer',
+                            fontSize: '10px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center'
+                          }}
+                          title="Supprimer ce filtre"
+                        >
+                          ✕
+                        </button>
+                      </span>
+                    ) : null}
+                    
+                    {filters.favorite !== null ? (
+                      <span style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        padding: '4px 8px',
+                        backgroundColor: '#ffc107',
+                        color: 'black',
+                        borderRadius: '12px',
+                        fontSize: '12px',
+                        gap: '6px'
+                      }}>
+                        {filters.favorite ? 'Favoris' : 'Non favoris'}
+                        <button
+                          onClick={() => removeFilter('favorite')}
+                          style={{
+                            background: 'rgba(0,0,0,0.2)',
+                            border: 'none',
+                            borderRadius: '50%',
+                            width: '16px',
+                            height: '16px',
+                            color: 'black',
+                            cursor: 'pointer',
+                            fontSize: '10px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center'
+                          }}
+                          title="Supprimer ce filtre"
+                        >
+                          ✕
+                        </button>
+                      </span>
+                    ) : null}
+                    
+                    {filters.days !== null ? (
+                      <span style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        padding: '4px 8px',
+                        backgroundColor: '#6f42c1',
+                        color: 'white',
+                        borderRadius: '12px',
+                        fontSize: '12px',
+                        gap: '6px'
+                      }}>
+                        {filters.days} jour{filters.days > 1 ? 's' : ''}
+                        <button
+                          onClick={() => removeFilter('days')}
+                          style={{
+                            background: 'rgba(255,255,255,0.3)',
+                            border: 'none',
+                            borderRadius: '50%',
+                            width: '16px',
+                            height: '16px',
+                            color: 'white',
+                            cursor: 'pointer',
+                            fontSize: '10px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center'
+                          }}
+                          title="Supprimer ce filtre"
+                        >
+                          ✕
+                        </button>
+                      </span>
+                    ) : null}
+                    
+                    {filters.feed_id !== null ? (
+                      <span style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        padding: '4px 8px',
+                        backgroundColor: '#fd7e14',
+                        color: 'white',
+                        borderRadius: '12px',
+                        fontSize: '12px',
+                        gap: '6px'
+                      }}>
+                        Flux: {feeds.find(f => f.id === filters.feed_id)?.title || 'Inconnu'}
+                        <button
+                          onClick={() => removeFilter('feed_id')}
+                          style={{
+                            background: 'rgba(255,255,255,0.3)',
+                            border: 'none',
+                            borderRadius: '50%',
+                            width: '16px',
+                            height: '16px',
+                            color: 'white',
+                            cursor: 'pointer',
+                            fontSize: '10px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center'
+                          }}
+                          title="Supprimer ce filtre"
+                        >
+                          ✕
+                        </button>
+                      </span>
+                    ) : null}
+                    
+                    {/* Bouton pour tout effacer */}
+                    <button 
+                      onClick={resetAllFilters}
+                      style={{
+                        marginLeft: '15px', 
+                        padding: '6px 12px', 
+                        backgroundColor: '#dc3545', 
+                        color: 'white', 
+                        border: 'none', 
+                        borderRadius: '12px', 
+                        fontSize: '12px', 
+                        cursor: 'pointer',
+                        fontWeight: 'bold'
+                      }}
+                      title="Supprimer tous les filtres"
+                    >
+                      🗑️ Tout effacer
+                    </button>
+                  </div>
+                </div>
+              ) : null}
             </div>
 
             <PaginationComponent />
@@ -641,23 +1245,110 @@ function App() {
                   <div key={article.id} style={{border: '1px solid #ddd', padding: '20px', margin: '15px 0', backgroundColor: 'white', borderRadius: '5px'}}>
                     <div style={{fontSize: '14px', color: '#007bff', marginBottom: '10px', fontWeight: 'bold'}}>
                       📰 {article.feed ? article.feed.title : 'Source inconnue'}
+                      
+                      {/* Tags cliquables avec meilleur espacement */}
+                      {article.feed && article.feed.tags && article.feed.tags.length > 0 ? (
+                        <div style={{marginTop: '8px', marginBottom: '8px', lineHeight: '1.6'}}>
+                          {article.feed.tags.split(',').map((tag, index) => (
+                            <span 
+                              key={index} 
+                              onClick={() => {
+                                const newFilters = {...filters, tags: tag.trim()};
+                                setFilters(newFilters);
+                                setTimeout(() => applyFilters(newFilters, 1), 100);
+                              }}
+                              style={{
+                                display: 'inline-block',
+                                backgroundColor: '#e9ecef',
+                                color: '#495057',
+                                padding: '3px 8px',
+                                borderRadius: '12px',
+                                fontSize: '11px',
+                                marginRight: '6px',
+                                marginBottom: '4px',
+                                cursor: 'pointer',
+                                border: '1px solid #dee2e6',
+                                transition: 'all 0.2s ease'
+                              }}
+                              onMouseOver={(e) => {
+                                e.target.style.backgroundColor = '#007bff';
+                                e.target.style.color = 'white';
+                                e.target.style.borderColor = '#0056b3';
+                              }}
+                              onMouseOut={(e) => {
+                                e.target.style.backgroundColor = '#e9ecef';
+                                e.target.style.color = '#495057';
+                                e.target.style.borderColor = '#dee2e6';
+                              }}
+                              title={`Cliquer pour filtrer par "${tag.trim()}"`}
+                            >
+                              {tag.trim()}
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
                     </div>
                     
-                    <h4 style={{marginBottom: '10px', lineHeight: '1.4'}}>{article.title}</h4>
+                    <h4 style={{marginBottom: '10px', lineHeight: '1.4', marginTop: '5px', fontSize: '18px', color: '#333'}}>{article.title}</h4>
                     
-                    {article.published && (
-                      <p style={{fontSize: '12px', color: '#888', marginBottom: '10px'}}>
+                    {article.published ? (
+                      <p style={{fontSize: '12px', color: '#888', marginBottom: '12px'}}>
                         📅 Publié le : {formatDate(article.published)}
                       </p>
-                    )}
+                    ) : null}
                     
-                    <p style={{marginBottom: '15px', lineHeight: '1.5'}}>{article.summary}</p>
+                    {/* Résumé avec protection */}
+                    {article.summary && article.summary.trim() ? (
+                      <p style={{
+                        marginBottom: '15px', 
+                        lineHeight: '1.6', 
+                        color: '#333', 
+                        fontSize: '14px',
+                        padding: '10px',
+                        backgroundColor: '#f8f9fa',
+                        borderLeft: '3px solid #007bff',
+                        borderRadius: '0 4px 4px 0'
+                      }}>
+                        {article.summary}
+                      </p>
+                    ) : (
+                      <p style={{
+                        marginBottom: '15px', 
+                        lineHeight: '1.5', 
+                        color: '#6c757d', 
+                        fontSize: '14px', 
+                        fontStyle: 'italic',
+                        padding: '10px',
+                        backgroundColor: '#f8f9fa',
+                        borderLeft: '3px solid #6c757d',
+                        borderRadius: '0 4px 4px 0'
+                      }}>
+                        📝 Aucun résumé disponible pour cet article.
+                      </p>
+                    )}
                     
                     <a 
                       href={article.link} 
                       target="_blank" 
                       rel="noopener noreferrer" 
-                      style={{color: '#007bff', textDecoration: 'none', display: 'inline-block', marginBottom: '15px'}}
+                      style={{
+                        color: '#007bff', 
+                        textDecoration: 'none', 
+                        display: 'inline-block', 
+                        marginBottom: '15px',
+                        padding: '8px 12px',
+                        border: '1px solid #007bff',
+                        borderRadius: '4px',
+                        transition: 'all 0.2s ease'
+                      }}
+                      onMouseOver={(e) => {
+                        e.target.style.backgroundColor = '#007bff';
+                        e.target.style.color = 'white';
+                      }}
+                      onMouseOut={(e) => {
+                        e.target.style.backgroundColor = 'transparent';
+                        e.target.style.color = '#007bff';
+                      }}
                     >
                       🔗 Lire l'article complet
                     </a>

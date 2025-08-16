@@ -97,6 +97,8 @@ class FeedCreate(BaseModel):
     title: str
     url: str
     description: str = ""
+    tags: str = ""
+    update_frequency: int = 60
     owner_id: int
 
 class UserCreate(BaseModel):
@@ -202,6 +204,36 @@ async def create_tables():
     except Exception as e:
         return {"status": f"Error creating tables: {str(e)}"}
 
+@app.post("/fix-existing-feeds")
+async def fix_existing_feeds():
+    try:
+        from database import SessionLocal
+        from models import Feed
+
+        db = SessionLocal()
+        try:
+            feeds = db.query(Feed).all()
+            updated_count = 0
+            
+            for feed in feeds:
+                if not hasattr(feed, 'update_frequency') or feed.update_frequency is None:
+                    feed.update_frequency = 60
+                    updated_count += 1
+                
+                if not hasattr(feed, 'tags') or feed.tags is None:
+                    feed.tags = ""
+            
+            db.commit()
+            
+            return {
+                "message": f"Correction terminée ! {updated_count} flux mis à jour",
+                "total_feeds": len(feeds)
+            }
+        finally:
+            db.close()
+    except Exception as e:
+        return {"error": f"Erreur lors de la correction: {str(e)}"}
+
 @app.post("/feeds")
 async def create_feed(feed_data: FeedCreate):
     try:
@@ -213,6 +245,8 @@ async def create_feed(feed_data: FeedCreate):
             title=feed_data.title,
             url=feed_data.url,
             description=feed_data.description,
+            tags=feed_data.tags,
+            update_frequency=feed_data.update_frequency,
             owner_id=feed_data.owner_id
         )
         
@@ -226,6 +260,8 @@ async def create_feed(feed_data: FeedCreate):
             "title": new_feed.title,
             "url": new_feed.url,
             "description": new_feed.description,
+            "tags": new_feed.tags,
+            "update_frequency": new_feed.update_frequency,
             "created_at": new_feed.created_at.isoformat()
         }
     except Exception as e:
@@ -248,6 +284,8 @@ async def get_feeds():
                     "title": feed.title,
                     "url": feed.url,
                     "description": feed.description,
+                    "tags": getattr(feed, 'tags', "") or "",
+                    "update_frequency": getattr(feed, 'update_frequency', 60) or 60,
                     "is_active": feed.is_active,
                     "last_updated": feed.last_updated.isoformat() if hasattr(feed, 'last_updated') and feed.last_updated else None,
                     "created_at": feed.created_at.isoformat()
@@ -275,6 +313,8 @@ async def get_user_feeds(user_id: int):
                     "title": feed.title,
                     "url": feed.url,
                     "description": feed.description,
+                    "tags": getattr(feed, 'tags', "") or "",
+                    "update_frequency": getattr(feed, 'update_frequency', 60) or 60,
                     "is_active": feed.is_active,
                     "created_at": feed.created_at.isoformat()
                 })
@@ -303,7 +343,6 @@ async def fetch_all_user_articles(user_id: int):
         feeds_processed = 0
 
         try:
-            # Récupérer tous les flux de l'utilisateur
             user_feeds = db.query(Feed).filter(Feed.owner_id == user_id, Feed.is_active == True).all()
             
             if not user_feeds:
@@ -325,7 +364,7 @@ async def fetch_all_user_articles(user_id: int):
                                     link=link,
                                     published=entry.get("published", ""),
                                     author=entry.get("author", ""),
-                                    summary=entry.get("summary", "")[:500] if entry.get("summary") else "",
+                                    summary=entry.get("summary", "")[:800] if entry.get("summary") else "",
                                     feed_id=feed.id
                                 )
                                 db.add(new_article)
@@ -333,7 +372,7 @@ async def fetch_all_user_articles(user_id: int):
                             else:
                                 existing.title = entry.get("title", existing.title)
                                 existing.published = entry.get("published", existing.published)
-                                existing.summary = entry.get("summary", existing.summary)[:500] if entry.get("summary") else existing.summary
+                                existing.summary = entry.get("summary", existing.summary)[:800] if entry.get("summary") else existing.summary
                                 articles_updated += 1
 
                     feed.last_updated = datetime.utcnow()
@@ -368,11 +407,9 @@ async def get_user_articles(user_id: int, page: int = 1, per_page: int = 20):
 
         db = SessionLocal()
         try:
-            # Récupérer les flux de l'utilisateur
             user_feed_ids = db.query(Feed.id).filter(Feed.owner_id == user_id).all()
             user_feed_ids = [feed_id[0] for feed_id in user_feed_ids]
             
-            # Si l'utilisateur n'a pas de flux, afficher tous les articles
             if not user_feed_ids:
                 all_articles = db.query(Article).all()
                 
@@ -390,15 +427,12 @@ async def get_user_articles(user_id: int, page: int = 1, per_page: int = 20):
                         "articles": []
                     }
                 
-                # Ajouter les informations du flux
                 for article in all_articles:
                     if not hasattr(article, 'feed') or article.feed is None:
                         article.feed = db.query(Feed).filter(Feed.id == article.feed_id).first()
                 
-                # Tri chronologique
                 all_articles.sort(key=get_sort_key, reverse=True)
                 
-                # Pagination
                 total_articles = len(all_articles)
                 total_pages = (total_articles + per_page - 1) // per_page
                 start_idx = (page - 1) * per_page
@@ -422,36 +456,34 @@ async def get_user_articles(user_id: int, page: int = 1, per_page: int = 20):
                             "link": article.link,
                             "published": format_date_for_display(article.published) if article.published else article.created_at.strftime("%d/%m/%Y %H:%M"),
                             "author": article.author,
-                            "summary": article.summary[:200] + "..." if len(article.summary) > 200 else article.summary,
+                            "summary": article.summary[:400] + "..." if len(article.summary) > 400 else article.summary,
                             "is_read": article.is_read,
                             "is_favorite": article.is_favorite,
                             "created_at": article.created_at.isoformat(),
                             "feed": {
                                 "id": article.feed.id,
                                 "title": article.feed.title,
-                                "url": article.feed.url
+                                "url": article.feed.url,
+                                "tags": getattr(article.feed, 'tags', "") or ""
                             } if article.feed else {
                                 "id": article.feed_id,
                                 "title": "Flux inconnu",
-                                "url": ""
+                                "url": "",
+                                "tags": ""
                             }
                         }
                         for article in articles
                     ]
                 }
             
-            # Récupérer les articles des flux de l'utilisateur
             all_articles = db.query(Article).filter(Article.feed_id.in_(user_feed_ids)).all()
             
-            # Ajouter les informations du flux
             for article in all_articles:
                 if not hasattr(article, 'feed') or article.feed is None:
                     article.feed = db.query(Feed).filter(Feed.id == article.feed_id).first()
             
-            # Tri chronologique
             all_articles.sort(key=get_sort_key, reverse=True)
             
-            # Pagination
             total_articles = len(all_articles)
             total_pages = (total_articles + per_page - 1) // per_page
             start_idx = (page - 1) * per_page
@@ -475,18 +507,20 @@ async def get_user_articles(user_id: int, page: int = 1, per_page: int = 20):
                         "link": article.link,
                         "published": format_date_for_display(article.published) if article.published else article.created_at.strftime("%d/%m/%Y %H:%M"),
                         "author": article.author,
-                        "summary": article.summary[:200] + "..." if len(article.summary) > 200 else article.summary,
+                        "summary": article.summary[:400] + "..." if len(article.summary) > 400 else article.summary,
                         "is_read": article.is_read,
                         "is_favorite": article.is_favorite,
                         "created_at": article.created_at.isoformat(),
                         "feed": {
                             "id": article.feed.id,
                             "title": article.feed.title,
-                            "url": article.feed.url
+                            "url": article.feed.url,
+                            "tags": getattr(article.feed, 'tags', "") or ""
                         } if article.feed else {
                             "id": article.feed_id,
                             "title": "Flux inconnu",
-                            "url": ""
+                            "url": "",
+                            "tags": ""
                         }
                     }
                     for article in articles
@@ -498,25 +532,23 @@ async def get_user_articles(user_id: int, page: int = 1, per_page: int = 20):
         return {"error": f"Error fetching user articles: {str(e)}"}
 
 @app.get("/users/{user_id}/articles/filter")
-async def filter_user_articles(user_id: int, page: int = 1, per_page: int = 20, read: bool = None, favorite: bool = None, search: str = None, days: int = None, feed_id: int = None):
+async def filter_user_articles(user_id: int, page: int = 1, per_page: int = 20, read: bool = None, favorite: bool = None, search: str = None, days: int = None, feed_id: int = None, tags: str = None):
     try:
         from database import SessionLocal
         from models import Feed, Article 
         from datetime import datetime, timedelta
+        from sqlalchemy import or_
 
         db = SessionLocal()
         try:
-            # Vérifier les flux de l'utilisateur
             user_feed_ids = db.query(Feed.id).filter(Feed.owner_id == user_id).all()
             user_feed_ids = [feed_id_tuple[0] for feed_id_tuple in user_feed_ids]
             
-            # Requête de base
             if not user_feed_ids:
                 query = db.query(Article)
             else:
                 query = db.query(Article).filter(Article.feed_id.in_(user_feed_ids))
             
-            # Application des filtres
             if read is not None: 
                 query = query.filter(Article.is_read == read)
 
@@ -536,18 +568,70 @@ async def filter_user_articles(user_id: int, page: int = 1, per_page: int = 20, 
             if feed_id is not None:
                 query = query.filter(Article.feed_id == feed_id)
 
-            # Récupérer et trier les articles
+            # 🆕 NOUVEAU : Filtrage par tags CORRIGÉ
+            if tags:
+                # Recherche flexible et robuste des feeds avec ce tag
+                feeds_with_tag = db.query(Feed.id).filter(
+                    or_(
+                        Feed.tags.ilike(f"%{tags}%"),           # Recherche générale
+                        Feed.tags.ilike(f"{tags},%"),           # Tag au début suivi d'une virgule
+                        Feed.tags.ilike(f"%, {tags},%"),        # Tag au milieu avec espaces
+                        Feed.tags.ilike(f"%, {tags}"),          # Tag à la fin après virgule et espace
+                        Feed.tags == tags                       # Correspondance exacte
+                    )
+                ).all()
+                
+                feed_ids_with_tag = [f[0] for f in feeds_with_tag]
+                
+                if feed_ids_with_tag:
+                    # Si on filtre déjà par user_feed_ids, on fait l'intersection
+                    if not user_feed_ids:
+                        # Pas de restriction utilisateur, on prend tous les feeds avec ce tag
+                        query = query.filter(Article.feed_id.in_(feed_ids_with_tag))
+                    else:
+                        # On fait l'intersection : flux de l'utilisateur ET flux avec ce tag
+                        intersection = list(set(user_feed_ids) & set(feed_ids_with_tag))
+                        if intersection:
+                            query = query.filter(Article.feed_id.in_(intersection))
+                        else:
+                            # Aucun flux de l'utilisateur n'a ce tag
+                            return {
+                                "user_id": user_id,
+                                "filters": {"read": read, "favorite": favorite, "search": search, "days": days, "feed_id": feed_id, "tags": tags},
+                                "pagination": {
+                                    "current_page": page,
+                                    "per_page": per_page,
+                                    "total_articles": 0,
+                                    "total_pages": 0,
+                                    "has_next": False,
+                                    "has_previous": False
+                                },
+                                "articles": []
+                            }
+                else:
+                    # Aucun feed avec ce tag, retourner une liste vide
+                    return {
+                        "user_id": user_id,
+                        "filters": {"read": read, "favorite": favorite, "search": search, "days": days, "feed_id": feed_id, "tags": tags},
+                        "pagination": {
+                            "current_page": page,
+                            "per_page": per_page,
+                            "total_articles": 0,
+                            "total_pages": 0,
+                            "has_next": False,
+                            "has_previous": False
+                        },
+                        "articles": []
+                    }
+
             all_filtered_articles = query.all()
             
-            # Ajouter les informations du flux
             for article in all_filtered_articles:
                 if not hasattr(article, 'feed') or article.feed is None:
                     article.feed = db.query(Feed).filter(Feed.id == article.feed_id).first()
             
-            # Tri chronologique
             all_filtered_articles.sort(key=get_sort_key, reverse=True)
             
-            # Pagination
             total_articles = len(all_filtered_articles)
             total_pages = (total_articles + per_page - 1) // per_page
             start_idx = (page - 1) * per_page
@@ -556,7 +640,7 @@ async def filter_user_articles(user_id: int, page: int = 1, per_page: int = 20, 
 
             return {
                 "user_id": user_id,
-                "filters": {"read": read, "favorite": favorite, "search": search, "days": days, "feed_id": feed_id},
+                "filters": {"read": read, "favorite": favorite, "search": search, "days": days, "feed_id": feed_id, "tags": tags},
                 "pagination": {
                     "current_page": page,
                     "per_page": per_page,
@@ -572,18 +656,20 @@ async def filter_user_articles(user_id: int, page: int = 1, per_page: int = 20, 
                         "link": article.link,
                         "published": format_date_for_display(article.published) if article.published else article.created_at.strftime("%d/%m/%Y %H:%M"),
                         "author": article.author,
-                        "summary": article.summary[:200] + "..." if len(article.summary) > 200 else article.summary,
+                        "summary": article.summary[:400] + "..." if len(article.summary) > 400 else article.summary,
                         "is_read": article.is_read,
                         "is_favorite": article.is_favorite,
                         "created_at": article.created_at.isoformat(),
                         "feed": {
                             "id": article.feed.id,
                             "title": article.feed.title,
-                            "url": article.feed.url
+                            "url": article.feed.url,
+                            "tags": getattr(article.feed, 'tags', "") or ""
                         } if article.feed else {
                             "id": article.feed_id,
                             "title": "Flux inconnu",
-                            "url": ""
+                            "url": "",
+                            "tags": ""
                         }
                     }
                     for article in articles
@@ -622,7 +708,7 @@ async def refresh_feed(feed_id: int):
                             link=link,
                             published=entry.get("published", ""),
                             author=entry.get("author", ""),
-                            summary=entry.get("summary", "")[:500] if entry.get("summary") else "",
+                            summary=entry.get("summary", "")[:800] if entry.get("summary") else "",
                             feed_id=feed.id
                         )
                         db.add(new_article)
@@ -630,7 +716,7 @@ async def refresh_feed(feed_id: int):
                     else:
                         existing.title = entry.get("title", existing.title)
                         existing.published = entry.get("published", existing.published)
-                        existing.summary = entry.get("summary", existing.summary)[:500] if entry.get("summary") else existing.summary
+                        existing.summary = entry.get("summary", existing.summary)[:800] if entry.get("summary") else existing.summary
                         articles_updated += 1
 
             feed.last_updated = datetime.utcnow()
