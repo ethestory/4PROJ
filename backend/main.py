@@ -1,9 +1,13 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import feedparser
 from datetime import datetime, timedelta
 import dateutil.parser
+import json
+import csv
+from io import StringIO
+import xml.etree.ElementTree as ET
 
 def format_date_for_display(date_string):
     """Convertit une date RSS en format DD/MM/YYYY HH:MM heure française"""
@@ -109,6 +113,12 @@ class UserCreate(BaseModel):
 class UserLogin(BaseModel):
     username: str
     password: str
+
+class ImportStats(BaseModel):
+    total_feeds: int
+    imported_feeds: int
+    skipped_feeds: int
+    errors: list
 
 # Initialisation FastAPI
 app = FastAPI(
@@ -939,6 +949,193 @@ async def export_user_feeds(user_id: int, format: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur lors de l'export: {str(e)}")
+
+@app.post("/users/{user_id}/import/{format}")
+async def import_user_feeds(user_id: int, format: str, file: UploadFile = File(...)):
+    """Import des flux utilisateur depuis JSON, CSV ou OPML"""
+    try:
+        from database import SessionLocal
+        from models import Feed
+        from datetime import datetime
+
+        if format not in ['json', 'csv', 'opml']:
+            raise HTTPException(status_code=400, detail="Format non supporté. Utilisez: json, csv, opml")
+
+        # Lire le contenu du fichier
+        content = await file.read()
+        content_str = content.decode('utf-8')
+
+        db = SessionLocal()
+        stats = {
+            "total_feeds": 0,
+            "imported_feeds": 0,
+            "skipped_feeds": 0,
+            "errors": []
+        }
+
+        try:
+            feeds_to_import = []
+
+            if format == 'json':
+                # Parser JSON
+                try:
+                    data = json.loads(content_str)
+                    if 'feeds' in data:
+                        feeds_to_import = data['feeds']
+                    else:
+                        # Format simple: liste directe
+                        feeds_to_import = data if isinstance(data, list) else [data]
+                except json.JSONDecodeError as e:
+                    raise HTTPException(status_code=400, detail=f"JSON invalide: {str(e)}")
+
+            elif format == 'csv':
+                # Parser CSV
+                try:
+                    csv_reader = csv.DictReader(StringIO(content_str))
+                    for row in csv_reader:
+                        # Adapter les noms de colonnes (flexible)
+                        feed_data = {
+                            'title': row.get('Title') or row.get('title') or row.get('name', ''),
+                            'url': row.get('URL') or row.get('url') or row.get('xmlUrl', ''),
+                            'description': row.get('Description') or row.get('description', ''),
+                            'tags': row.get('Tags') or row.get('tags', ''),
+                            'update_frequency': int(row.get('Update_Frequency') or row.get('update_frequency', 60))
+                        }
+                        if feed_data['url']:  # Seulement si URL présente
+                            feeds_to_import.append(feed_data)
+                except Exception as e:
+                    raise HTTPException(status_code=400, detail=f"CSV invalide: {str(e)}")
+
+            elif format == 'opml':
+                # Parser OPML (XML)
+                try:
+                    root = ET.fromstring(content_str)
+                    # Chercher tous les éléments outline avec xmlUrl
+                    for outline in root.iter('outline'):
+                        xml_url = outline.get('xmlUrl')
+                        if xml_url:  # C'est un flux RSS
+                            feed_data = {
+                                'title': outline.get('title') or outline.get('text', ''),
+                                'url': xml_url,
+                                'description': outline.get('description', ''),
+                                'tags': outline.get('category', ''),  # OPML peut avoir category
+                                'update_frequency': 60  # Défaut
+                            }
+                            feeds_to_import.append(feed_data)
+                except ET.ParseError as e:
+                    raise HTTPException(status_code=400, detail=f"OPML invalide: {str(e)}")
+
+            stats["total_feeds"] = len(feeds_to_import)
+
+            # Importer chaque flux
+            for feed_data in feeds_to_import:
+                try:
+                    # Vérifier si le flux existe déjà (même URL)
+                    existing_feed = db.query(Feed).filter(
+                        Feed.url == feed_data['url'],
+                        Feed.owner_id == user_id
+                    ).first()
+
+                    if existing_feed:
+                        stats["skipped_feeds"] += 1
+                        stats["errors"].append(f"Flux déjà existant: {feed_data['title']} ({feed_data['url']})")
+                        continue
+
+                    # Créer le nouveau flux
+                    new_feed = Feed(
+                        title=feed_data.get('title', 'Flux importé'),
+                        url=feed_data['url'],
+                        description=feed_data.get('description', ''),
+                        tags=feed_data.get('tags', ''),
+                        update_frequency=feed_data.get('update_frequency', 60),
+                        owner_id=user_id,
+                        created_at=datetime.utcnow()
+                    )
+
+                    # Valider l'URL RSS (optionnel mais recommandé)
+                    try:
+                        import feedparser
+                        test_feed = feedparser.parse(feed_data['url'])
+                        if test_feed.bozo and not test_feed.entries:
+                            stats["errors"].append(f"URL RSS invalide: {feed_data['title']} ({feed_data['url']})")
+                            continue
+                    except Exception:
+                        # Continuer même si la validation échoue
+                        pass
+
+                    db.add(new_feed)
+                    stats["imported_feeds"] += 1
+
+                except Exception as e:
+                    stats["errors"].append(f"Erreur avec {feed_data.get('title', 'flux')}: {str(e)}")
+                    continue
+
+            db.commit()
+
+            return {
+                "message": f"Import terminé! {stats['imported_feeds']}/{stats['total_feeds']} flux importés",
+                "format": format,
+                "filename": file.filename,
+                "stats": stats,
+                "user_id": user_id
+            }
+
+        finally:
+            db.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur lors de l'import: {str(e)}")
+
+@app.post("/validate-import/{format}")
+async def validate_import_file(format: str, file: UploadFile = File(...)):
+    """Valide un fichier d'import sans l'importer"""
+    try:
+        content = await file.read()
+        content_str = content.decode('utf-8')
+        
+        feeds_count = 0
+        errors = []
+        
+        if format == 'json':
+            try:
+                data = json.loads(content_str)
+                feeds = data.get('feeds', data) if isinstance(data, dict) else data
+                feeds_count = len(feeds) if isinstance(feeds, list) else 1
+            except json.JSONDecodeError as e:
+                errors.append(f"JSON invalide: {str(e)}")
+                
+        elif format == 'csv':
+            try:
+                csv_reader = csv.DictReader(StringIO(content_str))
+                feeds_count = sum(1 for row in csv_reader if row.get('URL') or row.get('url'))
+            except Exception as e:
+                errors.append(f"CSV invalide: {str(e)}")
+                
+        elif format == 'opml':
+            try:
+                root = ET.fromstring(content_str)
+                feeds_count = len([outline for outline in root.iter('outline') if outline.get('xmlUrl')])
+            except ET.ParseError as e:
+                errors.append(f"OPML invalide: {str(e)}")
+        
+        return {
+            "valid": len(errors) == 0,
+            "feeds_found": feeds_count,
+            "errors": errors,
+            "format": format,
+            "filename": file.filename
+        }
+        
+    except Exception as e:
+        return {
+            "valid": False,
+            "feeds_found": 0,
+            "errors": [f"Erreur de lecture: {str(e)}"],
+            "format": format,
+            "filename": file.filename
+        }
 
 if __name__ == "__main__":
     import uvicorn

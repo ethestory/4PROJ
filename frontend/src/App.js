@@ -37,6 +37,10 @@ function App() {
   });
   const [currentPage, setCurrentPage] = useState(1);
   const [showTagDropdown, setShowTagDropdown] = useState(false);
+  const [importFile, setImportFile] = useState(null);
+  const [importFormat, setImportFormat] = useState('opml');
+  const [importValidation, setImportValidation] = useState(null);
+  const [isImporting, setIsImporting] = useState(false);
 
   const handleRegister = async () => {
     try {
@@ -354,6 +358,111 @@ function App() {
     }
   };
 
+const validateImportFile = async (file, format) => {
+    if (!file) return;
+    
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      
+      const response = await axios.post(`http://localhost:8000/validate-import/${format}`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      });
+      
+      setImportValidation(response.data);
+      
+      if (response.data.valid) {
+        setMessage(`✅ Fichier valide! ${response.data.feeds_found} flux détectés`);
+      } else {
+        setMessage(`❌ Fichier invalide: ${response.data.errors.join(', ')}`);
+      }
+      
+    } catch (error) {
+      setMessage('Erreur lors de la validation: ' + error.message);
+      setImportValidation(null);
+    }
+  };
+
+  // Fonction d'import des flux
+  const importFeeds = async () => {
+    if (!currentUserId || !importFile) {
+      setMessage('Erreur: Aucun utilisateur connecté ou fichier sélectionné');
+      return;
+    }
+
+    setIsImporting(true);
+    
+    try {
+      const formData = new FormData();
+      formData.append('file', importFile);
+      
+      setMessage(`📥 Import ${importFormat.toUpperCase()} en cours...`);
+      
+      const response = await axios.post(
+        `http://localhost:8000/users/${currentUserId}/import/${importFormat}`, 
+        formData, 
+        {
+          headers: { 'Content-Type': 'multipart/form-data' }
+        }
+      );
+      
+      const stats = response.data.stats;
+      let message = `✅ Import terminé!\n`;
+      message += `📊 ${stats.imported_feeds}/${stats.total_feeds} flux importés\n`;
+      
+      if (stats.skipped_feeds > 0) {
+        message += `⏭️ ${stats.skipped_feeds} flux ignorés (déjà existants)\n`;
+      }
+      
+      if (stats.errors.length > 0) {
+        message += `⚠️ ${stats.errors.length} erreurs:\n`;
+        message += stats.errors.slice(0, 3).join('\n');
+        if (stats.errors.length > 3) {
+          message += `\n... et ${stats.errors.length - 3} autres erreurs`;
+        }
+      }
+      
+      setMessage(message);
+      
+      // Réinitialiser et recharger
+      setImportFile(null);
+      setImportValidation(null);
+      loadFeeds();
+      
+      // Actualiser les articles si des flux ont été importés
+      if (stats.imported_feeds > 0) {
+        setTimeout(() => syncAllFeeds(), 1000);
+      }
+      
+    } catch (error) {
+      setMessage(`❌ Erreur lors de l'import: ` + (error.response?.data?.detail || error.message));
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
+  // Gestionnaire de changement de fichier
+  const handleFileChange = (event) => {
+    const file = event.target.files[0];
+    setImportFile(file);
+    setImportValidation(null);
+    
+    if (file) {
+      // Auto-détecter le format basé sur l'extension
+      const fileName = file.name.toLowerCase();
+      if (fileName.endsWith('.json')) {
+        setImportFormat('json');
+      } else if (fileName.endsWith('.csv')) {
+        setImportFormat('csv');
+      } else if (fileName.endsWith('.opml') || fileName.endsWith('.xml')) {
+        setImportFormat('opml');
+      }
+      
+      // Valider automatiquement
+      setTimeout(() => validateImportFile(file, importFormat), 100);
+    }
+  };  
+
   const formatDate = (dateStr) => {
     try {
       let date;
@@ -649,6 +758,85 @@ function App() {
                   OPML
                 </button>
               </div>
+              {/* 🆕 SECTION D'IMPORT */}
+              <div style={{display: 'inline-block', marginLeft: '20px', borderLeft: '2px solid #ddd', paddingLeft: '20px'}}>
+                <span style={{marginRight: '10px', fontWeight: 'bold', color: '#666'}}>📥 Import:</span>
+                
+                <div style={{display: 'flex', flexDirection: 'column', gap: '10px', minWidth: '300px'}}>
+                  {/* Sélection du format */}
+                  <div style={{display: 'flex', alignItems: 'center', gap: '10px'}}>
+                    <select 
+                      value={importFormat}
+                      onChange={(e) => {
+                        setImportFormat(e.target.value);
+                        if (importFile) {
+                          validateImportFile(importFile, e.target.value);
+                        }
+                      }}
+                      style={{padding: '6px 10px', borderRadius: '4px', border: '1px solid #ddd'}}
+                    >
+                      <option value="opml">OPML (standard RSS)</option>
+                      <option value="json">JSON</option>
+                      <option value="csv">CSV</option>
+                    </select>
+                    
+                    {/* Sélection de fichier */}
+                    <input
+                      type="file"
+                      accept={
+                        importFormat === 'json' ? '.json' :
+                        importFormat === 'csv' ? '.csv' :
+                        '.opml,.xml'
+                      }
+                      onChange={handleFileChange}
+                      style={{fontSize: '12px'}}
+                    />
+                  </div>
+                  
+                  {/* Validation du fichier */}
+                  {importValidation && (
+                    <div style={{
+                      padding: '8px 12px',
+                      borderRadius: '4px',
+                      fontSize: '12px',
+                      backgroundColor: importValidation.valid ? '#d4edda' : '#f8d7da',
+                      color: importValidation.valid ? '#155724' : '#721c24',
+                      border: `1px solid ${importValidation.valid ? '#c3e6cb' : '#f5c6cb'}`
+                    }}>
+                      {importValidation.valid ? (
+                        <span>✅ {importValidation.feeds_found} flux détectés dans {importValidation.filename}</span>
+                      ) : (
+                        <span>❌ Erreurs: {importValidation.errors.join(', ')}</span>
+                      )}
+                    </div>
+                  )}
+                  
+                  {/* Bouton d'import */}
+                  <button
+                    onClick={importFeeds}
+                    disabled={!importFile || !importValidation?.valid || isImporting}
+                    style={{
+                      padding: '8px 12px',
+                      backgroundColor: (!importFile || !importValidation?.valid || isImporting) ? '#6c757d' : '#28a745',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '4px',
+                      cursor: (!importFile || !importValidation?.valid || isImporting) ? 'not-allowed' : 'pointer',
+                      fontSize: '12px',
+                      fontWeight: 'bold'
+                    }}
+                    title={
+                      !importFile ? 'Sélectionnez un fichier' :
+                      !importValidation?.valid ? 'Fichier invalide' :
+                      isImporting ? 'Import en cours...' :
+                      'Importer les flux'
+                    }
+                  >
+                    {isImporting ? '⏳ Import...' : '📥 Importer'}
+                  </button>
+                </div>
+              </div>
+
             </div>
             
             {feeds.length > 0 ? (
