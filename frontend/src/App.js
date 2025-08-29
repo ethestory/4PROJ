@@ -3,6 +3,8 @@ import axios from 'axios';
 import { api } from './api';
 import './App.css';
 
+const GOOGLE_CLIENT_ID = process.env.REACT_APP_GOOGLE_CLIENT_ID || "878235537833-s6enkhp3r37kjjmaqbiiepia0sv5gq1i.apps.googleusercontent.com";
+
 function App() {
   const [message, setMessage] = useState('');
   const [feeds, setFeeds] = useState([]);
@@ -71,7 +73,124 @@ function App() {
     }
   };
 
+  // Fonction OAuth2 Google corrigée
+  const handleGoogleResponse = async (response) => {
+    try {
+      console.log("Réponse Google reçue:", response);
+      
+      // Décoder le JWT token Google (partie payload)
+      const payload = JSON.parse(atob(response.credential.split('.')[1]));
+      console.log("Payload Google:", payload);
+      
+      // Préparer les données pour le backend
+      const googleAuthData = {
+        google_token: response.credential,
+        email: payload.email,
+        name: payload.name,
+        google_id: payload.sub
+      };
+
+      // Envoyer au backend pour traitement
+      const authResult = await axios.post('http://localhost:8000/auth/google', googleAuthData);
+      
+      if (authResult.data.success) {
+        setMessage(`Connexion Google réussie ! Bienvenue ${authResult.data.user.username}`);
+        setIsLoggedIn(true);
+        setCurrentUser(authResult.data.user.username);
+        setCurrentUserId(authResult.data.user.id);
+        
+        // Vider immédiatement les données affichées
+        setFeeds([]);
+        setArticles([]);
+        setPagination({
+          current_page: 1,
+          per_page: 20,
+          total_articles: 0,
+          total_pages: 0,
+          has_next: false,
+          has_previous: false
+        });
+        setCurrentPage(1);
+        
+      } else {
+        setMessage('Erreur lors de la connexion Google: ' + authResult.data.error);
+      }
+
+    } catch (error) {
+      console.error("Erreur Google OAuth:", error);
+      setMessage('Erreur lors de la connexion Google : ' + (error.response?.data?.error || error.message));
+    }
+  };
+
+  // Fonction d'initialisation Google corrigée
+  const initializeGoogleSignIn = () => {
+    if (window.google && window.google.accounts) {
+      try {
+        window.google.accounts.id.initialize({
+          client_id: GOOGLE_CLIENT_ID,
+          callback: handleGoogleResponse,
+          auto_select: false,
+          cancel_on_tap_outside: true
+        });
+
+        // Vérifier que l'élément existe avant de render
+        const buttonElement = document.getElementById("google-signin-button");
+        if (buttonElement) {
+          window.google.accounts.id.renderButton(
+            buttonElement,
+            { 
+              theme: "outline", 
+              size: "large",
+              width: "100%",
+              text: "continue_with",
+              locale: "fr"
+            }
+          );
+        }
+      } catch (error) {
+        console.error("Erreur initialisation Google:", error);
+        setMessage("Erreur lors de l'initialisation de Google Sign-In");
+      }
+    }
+  };
+
+  // UseEffect amélioré pour Google OAuth - nettoyage plus agressif
+  React.useEffect(() => {
+    const googleButton = document.getElementById("google-signin-button");
+    
+    if (!isLoggedIn) {
+      // Vider d'abord le bouton
+      if (googleButton) {
+        googleButton.innerHTML = '';
+      }
+      
+      // Attendre que le script Google soit chargé avec timeout
+      let attempts = 0;
+      const maxAttempts = 50;
+      
+      const checkGoogleLoaded = () => {
+        attempts++;
+        if (window.google && window.google.accounts) {
+          initializeGoogleSignIn();
+        } else if (attempts < maxAttempts) {
+          setTimeout(checkGoogleLoaded, 100);
+        } else {
+          console.warn("Google Sign-In n'a pas pu être initialisé");
+        }
+      };
+      
+      checkGoogleLoaded();
+    } else {
+      // Si connecté, supprimer complètement le contenu du bouton
+      if (googleButton) {
+        googleButton.innerHTML = '';
+        googleButton.style.display = 'none';
+      }
+    }
+  }, [isLoggedIn]);
+
   const logout = () => {
+    // Nettoyage complet de l'état
     setIsLoggedIn(false);
     setCurrentUser(null);
     setCurrentUserId(null);
@@ -87,11 +206,24 @@ function App() {
     });
     setCurrentPage(1);
     setMessage('Déconnecté');
+    
+    // Forcer le re-rendu en vidant le bouton Google existant
+    setTimeout(() => {
+      const googleButton = document.getElementById("google-signin-button");
+      if (googleButton) {
+        googleButton.innerHTML = '';
+      }
+    }, 100);
   };
 
   const loadFeeds = async () => {
+    if (!currentUserId) {
+      setMessage('Erreur: Aucun utilisateur connecté');
+      return;
+    }
+
     try {
-      const response = await axios.get('http://localhost:8000/feeds');
+      const response = await axios.get(`http://localhost:8000/users/${currentUserId}/feeds`);
       setFeeds(response.data.feeds || []);
     } catch (error) {
       setMessage('Erreur lors du chargement des flux');
@@ -178,7 +310,7 @@ function App() {
     }
   };
 
-  // 🔧 FONCTION UNIQUE POUR APPLIQUER LES FILTRES
+  // Fonction unique pour appliquer les filtres
   const applyFilters = async (customFilters = null, page = 1) => {
     if (!currentUserId) {
       setMessage('Erreur: Aucun utilisateur connecté');
@@ -241,7 +373,7 @@ function App() {
     }
   };
 
-  // 🔧 FONCTION POUR SUPPRIMER UN FILTRE SPÉCIFIQUE (SIMPLIFIÉE)
+  // Fonction pour supprimer un filtre spécifique
   const removeFilter = (filterType) => {
     const newFilters = { ...filters };
     
@@ -275,7 +407,7 @@ function App() {
     applyFilters(newFilters, 1);
   };
 
-  // 🔧 FONCTION POUR SUPPRIMER TOUS LES FILTRES (SIMPLIFIÉE)
+  // Fonction pour supprimer tous les filtres
   const resetAllFilters = () => {
     const emptyFilters = { read: null, favorite: null, search: '', days: null, feed_id: null, tags: '' };
     setFilters(emptyFilters);
@@ -323,7 +455,7 @@ function App() {
     }
   };
 
-  // 🆕 FONCTION D'EXPORT DES FLUX
+  // Fonction d'export des flux
   const exportFeeds = async (format) => {
     if (!currentUserId) {
       setMessage('Erreur: Aucun utilisateur connecté');
@@ -358,7 +490,7 @@ function App() {
     }
   };
 
-const validateImportFile = async (file, format) => {
+  const validateImportFile = async (file, format) => {
     if (!file) return;
     
     try {
@@ -411,7 +543,7 @@ const validateImportFile = async (file, format) => {
       message += `📊 ${stats.imported_feeds}/${stats.total_feeds} flux importés\n`;
       
       if (stats.skipped_feeds > 0) {
-        message += `⏭️ ${stats.skipped_feeds} flux ignorés (déjà existants)\n`;
+        message += `⭐️ ${stats.skipped_feeds} flux ignorés (déjà existants)\n`;
       }
       
       if (stats.errors.length > 0) {
@@ -461,7 +593,7 @@ const validateImportFile = async (file, format) => {
       // Valider automatiquement
       setTimeout(() => validateImportFile(file, importFormat), 100);
     }
-  };  
+  };
 
   const formatDate = (dateStr) => {
     try {
@@ -679,6 +811,22 @@ const validateImportFile = async (file, format) => {
                 Se connecter
               </button>
             </div>
+            
+            {/* Section Google OAuth - seulement si pas connecté */}
+            <div style={{marginTop: '15px', textAlign: 'center'}}>
+              <div style={{marginBottom: '10px', color: '#666', fontSize: '14px'}}>ou</div>
+              <div 
+                id="google-signin-button" 
+                style={{
+                  display: 'flex',
+                  justifyContent: 'center',
+                  minHeight: '44px'
+                }}
+              ></div>
+              <div style={{fontSize: '12px', color: '#666', marginTop: '5px'}}>
+                Connexion sécurisée avec Google
+              </div>
+            </div>
           </div>
 
           <div>
@@ -733,7 +881,7 @@ const validateImportFile = async (file, format) => {
                 🔧 Corriger les flux existants
               </button>
               
-              {/* 🆕 BOUTONS D'EXPORT */}
+              {/* Boutons d'export */}
               <div style={{display: 'inline-block', marginLeft: '20px'}}>
                 <span style={{marginRight: '10px', fontWeight: 'bold', color: '#666'}}>📤 Export:</span>
                 <button 
@@ -758,7 +906,8 @@ const validateImportFile = async (file, format) => {
                   OPML
                 </button>
               </div>
-              {/* 🆕 SECTION D'IMPORT */}
+              
+              {/* Section d'import */}
               <div style={{display: 'inline-block', marginLeft: '20px', borderLeft: '2px solid #ddd', paddingLeft: '20px'}}>
                 <span style={{marginRight: '10px', fontWeight: 'bold', color: '#666'}}>📥 Import:</span>
                 
@@ -950,7 +1099,7 @@ const validateImportFile = async (file, format) => {
               </button>
             </div>
             
-            {/* 🆕 SECTION FILTRES MODIFIÉE */}
+            {/* Section filtres */}
             <div style={{padding: '20px', background: '#f9f9f9', margin: '15px 0', border: '1px solid #ddd', borderRadius: '8px'}}>
               <h3>🔍 Filtres</h3>
               
@@ -1114,7 +1263,7 @@ const validateImportFile = async (file, format) => {
                   }}
                   style={{padding: '10px', borderRadius: '4px', border: '1px solid #ddd'}}
                 >
-                  <option value="all">Tous les flux</option>
+                  <option value="all">Tous mes flux</option>
                   {feeds.map(feed => (
                     <option key={feed.id} value={feed.id}>{feed.title}</option>
                   ))}
@@ -1200,7 +1349,7 @@ const validateImportFile = async (file, format) => {
                 </div>
               ) : null}
               
-              {/* 🆕 AFFICHAGE DES FILTRES ACTIFS AVEC SUPPRESSION INDIVIDUELLE */}
+              {/* Affichage des filtres actifs avec suppression individuelle */}
               {(filters.tags || filters.search || filters.read !== null || filters.favorite !== null || filters.days !== null || filters.feed_id !== null) ? (
                 <div style={{
                   marginBottom: '20px', 
@@ -1531,7 +1680,7 @@ const validateImportFile = async (file, format) => {
                         borderLeft: '3px solid #6c757d',
                         borderRadius: '0 4px 4px 0'
                       }}>
-                        📝 Aucun résumé disponible pour cet article.
+                        🔍 Aucun résumé disponible pour cet article.
                       </p>
                     )}
                     

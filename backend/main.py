@@ -8,16 +8,25 @@ import json
 import csv
 from io import StringIO
 import xml.etree.ElementTree as ET
+import os
+import secrets
+import string
+
+# Imports pour Google OAuth2
+try:
+    from google.auth.transport import requests as google_requests
+    from google.oauth2 import id_token
+    GOOGLE_AUTH_AVAILABLE = True
+except ImportError:
+    GOOGLE_AUTH_AVAILABLE = False
+    print("Google Auth libraries not available. OAuth2 will use basic verification.")
 
 def format_date_for_display(date_string):
     """Convertit une date RSS en format DD/MM/YYYY HH:MM heure française"""
     if not date_string:
         return ""
     try:
-        # Parser la date RSS
         parsed_date = dateutil.parser.parse(date_string)
-        
-        # Détecter si c'est UTC en regardant la string originale
         is_utc = (
             date_string.endswith('Z') or 
             '+00:00' in date_string or 
@@ -26,18 +35,14 @@ def format_date_for_display(date_string):
             (parsed_date.tzinfo is not None and parsed_date.utcoffset().total_seconds() == 0)
         )
         
-        # Si c'est UTC, ajouter l'offset France
         if is_utc:
             now = datetime.now()
-            # Été = +2h, Hiver = +1h
             offset_hours = 2 if (now.month >= 4 and now.month <= 9) else 1
             french_date = parsed_date.replace(tzinfo=None) + timedelta(hours=offset_hours)
         else:
-            # Déjà en heure locale
             french_date = parsed_date.replace(tzinfo=None)
         
         return french_date.strftime("%d/%m/%Y %H:%M")
-        
     except Exception:
         return date_string
 
@@ -47,7 +52,6 @@ def get_sort_key(article):
         if article.published:
             date_str = article.published.strip()
             
-            # Format français DD/MM/YYYY HH:MM
             if '/' in date_str and len(date_str.split('/')) == 3:
                 try:
                     if ' ' in date_str:
@@ -66,11 +70,8 @@ def get_sort_key(article):
                 except:
                     pass
             
-            # Format RSS standard avec même logique que format_date_for_display
             try:
                 parsed_date = dateutil.parser.parse(date_str)
-                
-                # Détecter UTC avec même logique
                 is_utc = (
                     date_str.endswith('Z') or 
                     '+00:00' in date_str or 
@@ -89,14 +90,10 @@ def get_sort_key(article):
                 pass
         
         return article.created_at
-        
     except Exception:
         return article.created_at
 
 # Modèles Pydantic
-class RSSRequest(BaseModel):
-    url: str
-
 class FeedCreate(BaseModel):
     title: str
     url: str
@@ -114,16 +111,16 @@ class UserLogin(BaseModel):
     username: str
     password: str
 
-class ImportStats(BaseModel):
-    total_feeds: int
-    imported_feeds: int
-    skipped_feeds: int
-    errors: list
+class GoogleAuthRequest(BaseModel):
+    google_token: str
+    email: str
+    name: str
+    google_id: str
 
 # Initialisation FastAPI
 app = FastAPI(
     title="SUPRSS API",
-    description="API pour la gestion de flux RSS",
+    description="API pour la gestion de flux RSS avec OAuth2",
     version="1.0.0"
 )
 
@@ -143,106 +140,84 @@ async def root():
 async def health_check():
     return {"status": "healthy", "service": "SUPRSS Backend"}
 
-@app.get("/test-rss")
-async def test_rss():
-    """Test basique avec le flux du Monde"""
-    try:
-        feed_url = "https://www.lemonde.fr/rss/une.xml"
-        feed = feedparser.parse(feed_url)
-        
-        return {
-            "feed_title": feed.feed.get("title", "Flux sans titre"),
-            "articles_count": len(feed.entries),
-            "first_article": {
-                "title": feed.entries[0].get("title", "Sans titre") if feed.entries else "Aucun article",
-                "link": feed.entries[0].get("link", "") if feed.entries else ""
-            }
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erreur RSS: {str(e)}")
-
-@app.post("/parse-rss")
-async def parse_rss(request: RSSRequest):
-    """Parse un flux RSS à partir de son URL"""
-    try:
-        feed = feedparser.parse(request.url)
-        
-        if feed.bozo:
-            raise HTTPException(status_code=400, detail="Flux RSS invalide ou inaccessible")
-        
-        feed_info = {
-            "title": feed.feed.get("title", "Flux sans titre"),
-            "description": feed.feed.get("description", ""),
-            "link": feed.feed.get("link", ""),
-        }
-        
-        articles = []
-        for entry in feed.entries[:5]:
-            articles.append({
-                "title": entry.get("title", "Sans titre"),
-                "link": entry.get("link", ""),
-                "published": entry.get("published", ""),
-                "summary": entry.get("summary", "")[:200] + "..." if len(entry.get("summary", "")) > 200 else entry.get("summary", "")
-            })
-        
-        return {
-            "feed_info": feed_info,
-            "total_articles": len(feed.entries),
-            "articles": articles
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erreur lors du parsing: {str(e)}")
-
-@app.get("/test-db")
-async def test_database():
-    try:
-        from database import test_connection
-        if test_connection():
-            return {"status": "Database connected"}
-        else:
-            return {"status": "Database connection failed"}
-    except Exception as e:
-        return {"status": f"Database error: {str(e)}"}
-
-@app.post("/create-tables")
-async def create_tables():
-    try:
-        from database import create_tables
-        create_tables()
-        return {"status": "Tables created successfully!"}
-    except Exception as e:
-        return {"status": f"Error creating tables: {str(e)}"}
-
-@app.post("/fix-existing-feeds")
-async def fix_existing_feeds():
+@app.post("/auth/google")
+async def google_oauth(auth_data: GoogleAuthRequest):
+    """Authentification via Google OAuth2"""
     try:
         from database import SessionLocal
-        from models import Feed
+        from models import User
+        from auth import hash_password
 
+        if GOOGLE_AUTH_AVAILABLE:
+            try:
+                GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "878235537833-s6enkhp3r37kjjmaqbiiepia0sv5gq1i.apps.googleusercontent.com")
+                idinfo = id_token.verify_oauth2_token(
+                    auth_data.google_token, 
+                    google_requests.Request(), 
+                    GOOGLE_CLIENT_ID
+                )
+                
+                if idinfo['iss'] not in ['accounts.google.com', 'https://accounts.google.com']:
+                    raise ValueError('Token Google invalide')
+            except Exception as token_error:
+                print(f"Avertissement vérification token: {token_error}")
+        
         db = SessionLocal()
         try:
-            feeds = db.query(Feed).all()
-            updated_count = 0
+            base_username = auth_data.email.split('@')[0] + '_google'
+            username = base_username
             
-            for feed in feeds:
-                if not hasattr(feed, 'update_frequency') or feed.update_frequency is None:
-                    feed.update_frequency = 60
-                    updated_count += 1
+            counter = 1
+            while db.query(User).filter(User.username == username).first():
+                username = f"{base_username}_{counter}"
+                counter += 1
+            
+            existing_user = db.query(User).filter(User.email == auth_data.email).first()
+            
+            if existing_user:
+                return {
+                    "success": True,
+                    "message": f"Connexion réussie via Google",
+                    "user": {
+                        "id": existing_user.id,
+                        "username": existing_user.username,
+                        "email": existing_user.email
+                    },
+                    "is_new_user": False
+                }
+            else:
+                secure_password = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(32))
+                hashed_pwd = hash_password(secure_password)
                 
-                if not hasattr(feed, 'tags') or feed.tags is None:
-                    feed.tags = ""
-            
-            db.commit()
-            
-            return {
-                "message": f"Correction terminée ! {updated_count} flux mis à jour",
-                "total_feeds": len(feeds)
-            }
+                new_user = User(
+                    username=username,
+                    email=auth_data.email,
+                    hashed_password=hashed_pwd
+                )
+                
+                db.add(new_user)
+                db.commit()
+                db.refresh(new_user)
+                
+                return {
+                    "success": True,
+                    "message": f"Compte Google créé avec succès pour {auth_data.name}",
+                    "user": {
+                        "id": new_user.id,
+                        "username": new_user.username,
+                        "email": new_user.email
+                    },
+                    "is_new_user": True
+                }
         finally:
             db.close()
     except Exception as e:
-        return {"error": f"Erreur lors de la correction: {str(e)}"}
+        print(f"Erreur OAuth Google: {str(e)}")
+        return {
+            "success": False,
+            "error": f"Erreur lors de l'authentification Google: {str(e)}",
+            "user": None
+        }
 
 @app.post("/feeds")
 async def create_feed(feed_data: FeedCreate):
@@ -277,35 +252,6 @@ async def create_feed(feed_data: FeedCreate):
     except Exception as e:
         return {"error": f"Error creating feed: {str(e)}"}
 
-@app.get("/feeds")
-async def get_feeds():
-    try:
-        from database import SessionLocal
-        from models import Feed
-
-        db = SessionLocal()
-        feeds = db.query(Feed).all()    
-        db.close()
-
-        return {
-            "feeds": [
-                {
-                    "id": feed.id,
-                    "title": feed.title,
-                    "url": feed.url,
-                    "description": feed.description,
-                    "tags": getattr(feed, 'tags', "") or "",
-                    "update_frequency": getattr(feed, 'update_frequency', 60) or 60,
-                    "is_active": feed.is_active,
-                    "last_updated": feed.last_updated.isoformat() if hasattr(feed, 'last_updated') and feed.last_updated else None,
-                    "created_at": feed.created_at.isoformat()
-                }
-                for feed in feeds
-            ]
-        }
-    except Exception as e:
-        return {"error": f"Error fetching feeds: {str(e)}"}
-
 @app.get("/users/{user_id}/feeds")
 async def get_user_feeds(user_id: int):
     try:
@@ -326,6 +272,7 @@ async def get_user_feeds(user_id: int):
                     "tags": getattr(feed, 'tags', "") or "",
                     "update_frequency": getattr(feed, 'update_frequency', 60) or 60,
                     "is_active": feed.is_active,
+                    "last_updated": feed.last_updated.isoformat() if hasattr(feed, 'last_updated') and feed.last_updated else None,
                     "created_at": feed.created_at.isoformat()
                 })
             
@@ -356,7 +303,13 @@ async def fetch_all_user_articles(user_id: int):
             user_feeds = db.query(Feed).filter(Feed.owner_id == user_id, Feed.is_active == True).all()
             
             if not user_feeds:
-                user_feeds = db.query(Feed).filter(Feed.is_active == True).all()
+                return {
+                    "message": f"Aucun flux actif trouvé pour l'utilisateur {user_id}",
+                    "user_id": user_id,
+                    "feeds_processed": 0,
+                    "total_articles_added": 0,
+                    "total_articles_updated": 0
+                }
             
             for feed in user_feeds:
                 try:
@@ -390,12 +343,13 @@ async def fetch_all_user_articles(user_id: int):
                     total_articles_updated += articles_updated
                     feeds_processed += 1
                     
-                except Exception:
+                except Exception as e:
+                    print(f"Erreur lors du traitement du flux {feed.id}: {e}")
                     continue
 
             db.commit()
             
-            final_message = f"Synchronisation terminée ! {feeds_processed} flux traités, {total_articles_added} nouveaux articles, {total_articles_updated} mis à jour"
+            final_message = f"Synchronisation terminée pour l'utilisateur {user_id} ! {feeds_processed} flux traités, {total_articles_added} nouveaux articles, {total_articles_updated} mis à jour"
 
             return {
                 "message": final_message,
@@ -421,69 +375,17 @@ async def get_user_articles(user_id: int, page: int = 1, per_page: int = 20):
             user_feed_ids = [feed_id[0] for feed_id in user_feed_ids]
             
             if not user_feed_ids:
-                all_articles = db.query(Article).all()
-                
-                if not all_articles:
-                    return {
-                        "user_id": user_id,
-                        "pagination": {
-                            "current_page": page,
-                            "per_page": per_page,
-                            "total_articles": 0,
-                            "total_pages": 0,
-                            "has_next": False,
-                            "has_previous": False
-                        },
-                        "articles": []
-                    }
-                
-                for article in all_articles:
-                    if not hasattr(article, 'feed') or article.feed is None:
-                        article.feed = db.query(Feed).filter(Feed.id == article.feed_id).first()
-                
-                all_articles.sort(key=get_sort_key, reverse=True)
-                
-                total_articles = len(all_articles)
-                total_pages = (total_articles + per_page - 1) // per_page
-                start_idx = (page - 1) * per_page
-                end_idx = start_idx + per_page
-                articles = all_articles[start_idx:end_idx]
-
                 return {
                     "user_id": user_id,
                     "pagination": {
                         "current_page": page,
                         "per_page": per_page,
-                        "total_articles": total_articles,
-                        "total_pages": total_pages,
-                        "has_next": page < total_pages,
-                        "has_previous": page > 1
+                        "total_articles": 0,
+                        "total_pages": 0,
+                        "has_next": False,
+                        "has_previous": False
                     },
-                    "articles": [
-                        {
-                            "id": article.id,
-                            "title": article.title,
-                            "link": article.link,
-                            "published": format_date_for_display(article.published) if article.published else article.created_at.strftime("%d/%m/%Y %H:%M"),
-                            "author": article.author,
-                            "summary": article.summary[:400] + "..." if len(article.summary) > 400 else article.summary,
-                            "is_read": article.is_read,
-                            "is_favorite": article.is_favorite,
-                            "created_at": article.created_at.isoformat(),
-                            "feed": {
-                                "id": article.feed.id,
-                                "title": article.feed.title,
-                                "url": article.feed.url,
-                                "tags": getattr(article.feed, 'tags', "") or ""
-                            } if article.feed else {
-                                "id": article.feed_id,
-                                "title": "Flux inconnu",
-                                "url": "",
-                                "tags": ""
-                            }
-                        }
-                        for article in articles
-                    ]
+                    "articles": []
                 }
             
             all_articles = db.query(Article).filter(Article.feed_id.in_(user_feed_ids)).all()
@@ -541,204 +443,6 @@ async def get_user_articles(user_id: int, page: int = 1, per_page: int = 20):
     except Exception as e:
         return {"error": f"Error fetching user articles: {str(e)}"}
 
-@app.get("/users/{user_id}/articles/filter")
-async def filter_user_articles(user_id: int, page: int = 1, per_page: int = 20, read: bool = None, favorite: bool = None, search: str = None, days: int = None, feed_id: int = None, tags: str = None):
-    try:
-        from database import SessionLocal
-        from models import Feed, Article 
-        from datetime import datetime, timedelta
-        from sqlalchemy import or_
-
-        db = SessionLocal()
-        try:
-            user_feed_ids = db.query(Feed.id).filter(Feed.owner_id == user_id).all()
-            user_feed_ids = [feed_id_tuple[0] for feed_id_tuple in user_feed_ids]
-            
-            if not user_feed_ids:
-                query = db.query(Article)
-            else:
-                query = db.query(Article).filter(Article.feed_id.in_(user_feed_ids))
-            
-            if read is not None: 
-                query = query.filter(Article.is_read == read)
-
-            if favorite is not None:
-                query = query.filter(Article.is_favorite == favorite)
-
-            if search: 
-                query = query.filter(
-                    (Article.title.ilike(f"%{search}%")) |
-                    (Article.summary.ilike(f"%{search}%"))
-                )
-            
-            if days is not None:
-                cutoff_date = datetime.utcnow() - timedelta(days=days)
-                query = query.filter(Article.created_at >= cutoff_date)
-            
-            if feed_id is not None:
-                query = query.filter(Article.feed_id == feed_id)
-
-            # Filtrage par tags
-            if tags:
-                feeds_with_tag = db.query(Feed.id).filter(
-                    or_(
-                        Feed.tags.ilike(f"%{tags}%"),
-                        Feed.tags.ilike(f"{tags},%"),
-                        Feed.tags.ilike(f"%, {tags},%"),
-                        Feed.tags.ilike(f"%, {tags}"),
-                        Feed.tags == tags
-                    )
-                ).all()
-                
-                feed_ids_with_tag = [f[0] for f in feeds_with_tag]
-                
-                if feed_ids_with_tag:
-                    if not user_feed_ids:
-                        query = query.filter(Article.feed_id.in_(feed_ids_with_tag))
-                    else:
-                        intersection = list(set(user_feed_ids) & set(feed_ids_with_tag))
-                        if intersection:
-                            query = query.filter(Article.feed_id.in_(intersection))
-                        else:
-                            return {
-                                "user_id": user_id,
-                                "filters": {"read": read, "favorite": favorite, "search": search, "days": days, "feed_id": feed_id, "tags": tags},
-                                "pagination": {
-                                    "current_page": page,
-                                    "per_page": per_page,
-                                    "total_articles": 0,
-                                    "total_pages": 0,
-                                    "has_next": False,
-                                    "has_previous": False
-                                },
-                                "articles": []
-                            }
-                else:
-                    return {
-                        "user_id": user_id,
-                        "filters": {"read": read, "favorite": favorite, "search": search, "days": days, "feed_id": feed_id, "tags": tags},
-                        "pagination": {
-                            "current_page": page,
-                            "per_page": per_page,
-                            "total_articles": 0,
-                            "total_pages": 0,
-                            "has_next": False,
-                            "has_previous": False
-                        },
-                        "articles": []
-                    }
-
-            all_filtered_articles = query.all()
-            
-            for article in all_filtered_articles:
-                if not hasattr(article, 'feed') or article.feed is None:
-                    article.feed = db.query(Feed).filter(Feed.id == article.feed_id).first()
-            
-            all_filtered_articles.sort(key=get_sort_key, reverse=True)
-            
-            total_articles = len(all_filtered_articles)
-            total_pages = (total_articles + per_page - 1) // per_page
-            start_idx = (page - 1) * per_page
-            end_idx = start_idx + per_page
-            articles = all_filtered_articles[start_idx:end_idx]
-
-            return {
-                "user_id": user_id,
-                "filters": {"read": read, "favorite": favorite, "search": search, "days": days, "feed_id": feed_id, "tags": tags},
-                "pagination": {
-                    "current_page": page,
-                    "per_page": per_page,
-                    "total_articles": total_articles,
-                    "total_pages": total_pages,
-                    "has_next": page < total_pages,
-                    "has_previous": page > 1
-                },
-                "articles": [
-                    {
-                        "id": article.id,
-                        "title": article.title,
-                        "link": article.link,
-                        "published": format_date_for_display(article.published) if article.published else article.created_at.strftime("%d/%m/%Y %H:%M"),
-                        "author": article.author,
-                        "summary": article.summary[:400] + "..." if len(article.summary) > 400 else article.summary,
-                        "is_read": article.is_read,
-                        "is_favorite": article.is_favorite,
-                        "created_at": article.created_at.isoformat(),
-                        "feed": {
-                            "id": article.feed.id,
-                            "title": article.feed.title,
-                            "url": article.feed.url,
-                            "tags": getattr(article.feed, 'tags', "") or ""
-                        } if article.feed else {
-                            "id": article.feed_id,
-                            "title": "Flux inconnu",
-                            "url": "",
-                            "tags": ""
-                        }
-                    }
-                    for article in articles
-                ]
-            }
-        finally: 
-            db.close()
-    except Exception as e:
-        return {"error": f"Erreur dans le filtrage des articles utilisateur : {str(e)}"}
-
-@app.post("/feeds/{feed_id}/refresh")
-async def refresh_feed(feed_id: int):
-    try:
-        from database import SessionLocal
-        from models import Feed, Article
-        import feedparser
-        from datetime import datetime
-
-        db = SessionLocal()
-        try:
-            feed = db.query(Feed).filter(Feed.id == feed_id).first()
-            if not feed:
-                raise HTTPException(status_code=404, detail="Feed not found")
-            
-            rss_feed = feedparser.parse(feed.url)
-            articles_added = 0
-            articles_updated = 0
-
-            for entry in rss_feed.entries:
-                link = entry.get("link", "")
-                if link:
-                    existing = db.query(Article).filter(Article.link == link).first()
-                    if not existing:
-                        new_article = Article(
-                            title=entry.get("title", "Sans Titre"),
-                            link=link,
-                            published=entry.get("published", ""),
-                            author=entry.get("author", ""),
-                            summary=entry.get("summary", "")[:800] if entry.get("summary") else "",
-                            feed_id=feed.id
-                        )
-                        db.add(new_article)
-                        articles_added += 1
-                    else:
-                        existing.title = entry.get("title", existing.title)
-                        existing.published = entry.get("published", existing.published)
-                        existing.summary = entry.get("summary", existing.summary)[:800] if entry.get("summary") else existing.summary
-                        articles_updated += 1
-
-            feed.last_updated = datetime.utcnow()
-            db.commit()
-            
-            message = f"Flux '{feed.title}' actualisé: {articles_added} nouveaux articles, {articles_updated} mis à jour"
-            
-            return {
-                "message": message,
-                "feed_id": feed_id,
-                "articles_added": articles_added,
-                "articles_updated": articles_updated
-            }
-        finally:
-            db.close()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erreur lors de l'actualisation: {str(e)}")
-
 @app.post("/login")
 async def login(user_data: UserLogin):
     try:
@@ -789,7 +493,7 @@ async def register(user_data: UserCreate):
             db.close()
     except Exception as e:
        return {"error": f"Registration failed: {str(e)}"}
-    
+
 @app.patch("/articles/{article_id}/read")
 async def toggle_article_read(article_id: int, read_status: bool = True):
     try:
@@ -832,310 +536,14 @@ async def toggle_article_favorite(article_id: int, favorite_status: bool = True)
     except Exception as e: 
         return {"error": f"Error: {str(e)}"}
 
-# 🆕 ENDPOINT D'EXPORT
-@app.get("/users/{user_id}/export/{format}")
-async def export_user_feeds(user_id: int, format: str):
-    """Export des flux utilisateur en JSON, CSV ou OPML"""
+@app.post("/create-tables")
+async def create_tables():
     try:
-        from database import SessionLocal
-        from models import Feed
-        import json
-        import csv
-        from io import StringIO
-        from datetime import datetime
-
-        if format not in ['json', 'csv', 'opml']:
-            raise HTTPException(status_code=400, detail="Format non supporté. Utilisez: json, csv, opml")
-
-        db = SessionLocal()
-        try:
-            # Récupérer les flux de l'utilisateur
-            user_feeds = db.query(Feed).filter(Feed.owner_id == user_id).all()
-            
-            if not user_feeds:
-                raise HTTPException(status_code=404, detail="Aucun flux trouvé pour cet utilisateur")
-
-            if format == 'json':
-                # Export JSON
-                feeds_data = []
-                for feed in user_feeds:
-                    feeds_data.append({
-                        "title": feed.title,
-                        "url": feed.url,
-                        "description": feed.description or "",
-                        "tags": feed.tags or "",
-                        "update_frequency": feed.update_frequency or 60,
-                        "is_active": feed.is_active,
-                        "created_at": feed.created_at.isoformat(),
-                        "last_updated": feed.last_updated.isoformat() if feed.last_updated else None
-                    })
-                
-                export_data = {
-                    "export_date": datetime.utcnow().isoformat(),
-                    "user_id": user_id,
-                    "total_feeds": len(feeds_data),
-                    "feeds": feeds_data
-                }
-                
-                return {
-                    "format": "json",
-                    "filename": f"suprss_export_{user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                    "data": json.dumps(export_data, indent=2, ensure_ascii=False)
-                }
-
-            elif format == 'csv':
-                # Export CSV
-                output = StringIO()
-                writer = csv.writer(output)
-                
-                # En-têtes CSV
-                writer.writerow(['Title', 'URL', 'Description', 'Tags', 'Update_Frequency', 'Is_Active', 'Created_At', 'Last_Updated'])
-                
-                # Données
-                for feed in user_feeds:
-                    writer.writerow([
-                        feed.title,
-                        feed.url,
-                        feed.description or "",
-                        feed.tags or "",
-                        feed.update_frequency or 60,
-                        feed.is_active,
-                        feed.created_at.strftime('%Y-%m-%d %H:%M:%S'),
-                        feed.last_updated.strftime('%Y-%m-%d %H:%M:%S') if feed.last_updated else ""
-                    ])
-                
-                return {
-                    "format": "csv",
-                    "filename": f"suprss_export_{user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    "data": output.getvalue()
-                }
-
-            elif format == 'opml':
-                # Export OPML (format standard pour les flux RSS)
-                opml_lines = [
-                    '<?xml version="1.0" encoding="UTF-8"?>',
-                    '<opml version="2.0">',
-                    '  <head>',
-                    f'    <title>SUPRSS Export - User {user_id}</title>',
-                    f'    <dateCreated>{datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S GMT")}</dateCreated>',
-                    f'    <docs>http://www.opml.org/spec2</docs>',
-                    '  </head>',
-                    '  <body>'
-                ]
-                
-                for feed in user_feeds:
-                    # Échapper les caractères XML
-                    title = feed.title.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
-                    url = feed.url.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
-                    description = (feed.description or "").replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
-                    
-                    opml_lines.append(f'    <outline type="rss" text="{title}" title="{title}" xmlUrl="{url}" description="{description}" />')
-                
-                opml_lines.extend([
-                    '  </body>',
-                    '</opml>'
-                ])
-                
-                return {
-                    "format": "opml",
-                    "filename": f"suprss_export_{user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.opml",
-                    "data": '\n'.join(opml_lines)
-                }
-
-        finally:
-            db.close()
-
-    except HTTPException:
-        raise
+        from database import create_tables
+        create_tables()
+        return {"status": "Tables created successfully!"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erreur lors de l'export: {str(e)}")
-
-@app.post("/users/{user_id}/import/{format}")
-async def import_user_feeds(user_id: int, format: str, file: UploadFile = File(...)):
-    """Import des flux utilisateur depuis JSON, CSV ou OPML"""
-    try:
-        from database import SessionLocal
-        from models import Feed
-        from datetime import datetime
-
-        if format not in ['json', 'csv', 'opml']:
-            raise HTTPException(status_code=400, detail="Format non supporté. Utilisez: json, csv, opml")
-
-        # Lire le contenu du fichier
-        content = await file.read()
-        content_str = content.decode('utf-8')
-
-        db = SessionLocal()
-        stats = {
-            "total_feeds": 0,
-            "imported_feeds": 0,
-            "skipped_feeds": 0,
-            "errors": []
-        }
-
-        try:
-            feeds_to_import = []
-
-            if format == 'json':
-                # Parser JSON
-                try:
-                    data = json.loads(content_str)
-                    if 'feeds' in data:
-                        feeds_to_import = data['feeds']
-                    else:
-                        # Format simple: liste directe
-                        feeds_to_import = data if isinstance(data, list) else [data]
-                except json.JSONDecodeError as e:
-                    raise HTTPException(status_code=400, detail=f"JSON invalide: {str(e)}")
-
-            elif format == 'csv':
-                # Parser CSV
-                try:
-                    csv_reader = csv.DictReader(StringIO(content_str))
-                    for row in csv_reader:
-                        # Adapter les noms de colonnes (flexible)
-                        feed_data = {
-                            'title': row.get('Title') or row.get('title') or row.get('name', ''),
-                            'url': row.get('URL') or row.get('url') or row.get('xmlUrl', ''),
-                            'description': row.get('Description') or row.get('description', ''),
-                            'tags': row.get('Tags') or row.get('tags', ''),
-                            'update_frequency': int(row.get('Update_Frequency') or row.get('update_frequency', 60))
-                        }
-                        if feed_data['url']:  # Seulement si URL présente
-                            feeds_to_import.append(feed_data)
-                except Exception as e:
-                    raise HTTPException(status_code=400, detail=f"CSV invalide: {str(e)}")
-
-            elif format == 'opml':
-                # Parser OPML (XML)
-                try:
-                    root = ET.fromstring(content_str)
-                    # Chercher tous les éléments outline avec xmlUrl
-                    for outline in root.iter('outline'):
-                        xml_url = outline.get('xmlUrl')
-                        if xml_url:  # C'est un flux RSS
-                            feed_data = {
-                                'title': outline.get('title') or outline.get('text', ''),
-                                'url': xml_url,
-                                'description': outline.get('description', ''),
-                                'tags': outline.get('category', ''),  # OPML peut avoir category
-                                'update_frequency': 60  # Défaut
-                            }
-                            feeds_to_import.append(feed_data)
-                except ET.ParseError as e:
-                    raise HTTPException(status_code=400, detail=f"OPML invalide: {str(e)}")
-
-            stats["total_feeds"] = len(feeds_to_import)
-
-            # Importer chaque flux
-            for feed_data in feeds_to_import:
-                try:
-                    # Vérifier si le flux existe déjà (même URL)
-                    existing_feed = db.query(Feed).filter(
-                        Feed.url == feed_data['url'],
-                        Feed.owner_id == user_id
-                    ).first()
-
-                    if existing_feed:
-                        stats["skipped_feeds"] += 1
-                        stats["errors"].append(f"Flux déjà existant: {feed_data['title']} ({feed_data['url']})")
-                        continue
-
-                    # Créer le nouveau flux
-                    new_feed = Feed(
-                        title=feed_data.get('title', 'Flux importé'),
-                        url=feed_data['url'],
-                        description=feed_data.get('description', ''),
-                        tags=feed_data.get('tags', ''),
-                        update_frequency=feed_data.get('update_frequency', 60),
-                        owner_id=user_id,
-                        created_at=datetime.utcnow()
-                    )
-
-                    # Valider l'URL RSS (optionnel mais recommandé)
-                    try:
-                        import feedparser
-                        test_feed = feedparser.parse(feed_data['url'])
-                        if test_feed.bozo and not test_feed.entries:
-                            stats["errors"].append(f"URL RSS invalide: {feed_data['title']} ({feed_data['url']})")
-                            continue
-                    except Exception:
-                        # Continuer même si la validation échoue
-                        pass
-
-                    db.add(new_feed)
-                    stats["imported_feeds"] += 1
-
-                except Exception as e:
-                    stats["errors"].append(f"Erreur avec {feed_data.get('title', 'flux')}: {str(e)}")
-                    continue
-
-            db.commit()
-
-            return {
-                "message": f"Import terminé! {stats['imported_feeds']}/{stats['total_feeds']} flux importés",
-                "format": format,
-                "filename": file.filename,
-                "stats": stats,
-                "user_id": user_id
-            }
-
-        finally:
-            db.close()
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erreur lors de l'import: {str(e)}")
-
-@app.post("/validate-import/{format}")
-async def validate_import_file(format: str, file: UploadFile = File(...)):
-    """Valide un fichier d'import sans l'importer"""
-    try:
-        content = await file.read()
-        content_str = content.decode('utf-8')
-        
-        feeds_count = 0
-        errors = []
-        
-        if format == 'json':
-            try:
-                data = json.loads(content_str)
-                feeds = data.get('feeds', data) if isinstance(data, dict) else data
-                feeds_count = len(feeds) if isinstance(feeds, list) else 1
-            except json.JSONDecodeError as e:
-                errors.append(f"JSON invalide: {str(e)}")
-                
-        elif format == 'csv':
-            try:
-                csv_reader = csv.DictReader(StringIO(content_str))
-                feeds_count = sum(1 for row in csv_reader if row.get('URL') or row.get('url'))
-            except Exception as e:
-                errors.append(f"CSV invalide: {str(e)}")
-                
-        elif format == 'opml':
-            try:
-                root = ET.fromstring(content_str)
-                feeds_count = len([outline for outline in root.iter('outline') if outline.get('xmlUrl')])
-            except ET.ParseError as e:
-                errors.append(f"OPML invalide: {str(e)}")
-        
-        return {
-            "valid": len(errors) == 0,
-            "feeds_found": feeds_count,
-            "errors": errors,
-            "format": format,
-            "filename": file.filename
-        }
-        
-    except Exception as e:
-        return {
-            "valid": False,
-            "feeds_found": 0,
-            "errors": [f"Erreur de lecture: {str(e)}"],
-            "format": format,
-            "filename": file.filename
-        }
+        return {"status": f"Error creating tables: {str(e)}"}
 
 if __name__ == "__main__":
     import uvicorn
