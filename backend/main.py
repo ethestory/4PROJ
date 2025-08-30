@@ -1,8 +1,8 @@
-from fastapi import FastAPI, HTTPException, Depends, Query
+from fastapi import FastAPI, HTTPException, Depends, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from sqlalchemy import or_
+from sqlalchemy import or_, func
 import feedparser
 from datetime import datetime, timedelta
 import dateutil.parser
@@ -10,6 +10,7 @@ import secrets
 import string
 import os
 from contextlib import asynccontextmanager
+import json
 
 # Imports pour Google OAuth2
 try:
@@ -62,7 +63,7 @@ def get_french_time():
     return utc_now + timedelta(hours=offset_hours)
 
 def format_date_for_display(date_input):
-    """Convertit une date en format DD/MM/YYYY HH:MM heure française - VERSION CORRIGÉE"""
+    """Convertit une date en format DD/MM/YYYY HH:MM heure française"""
     if not date_input:
         return ""
     
@@ -90,7 +91,7 @@ def format_date_for_display(date_input):
         
         parsed_date = dateutil.parser.parse(date_string)
         
-        # CORRECTION : Ne pas modifier l'heure si elle semble déjà correcte
+        # Ne pas modifier l'heure si elle semble déjà correcte
         # Vérifier si c'est une date UTC et la convertir en heure française
         is_utc = (
             date_string.endswith('Z') or 
@@ -160,7 +161,7 @@ def get_sort_key(article):
         return article.created_at
     except Exception:
         return article.created_at
-
+    
 # Modèles Pydantic
 class FeedCreate(BaseModel):
     title: str
@@ -245,7 +246,7 @@ async def create_tables():
         return {"status": "Tables created successfully!"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error creating tables: {str(e)}")
-
+    
 @app.post("/auth/google")
 async def google_oauth(auth_data: GoogleAuthRequest, db: Session = Depends(get_db)):
     """Authentification via Google OAuth2"""
@@ -460,12 +461,7 @@ async def fetch_all_user_articles(user_id: int, db: Session = Depends(get_db)):
                 for entry in reversed(rss_feed.entries):
                     link = entry.get("link", "")
                     if link:
-                        # CORRECTION : Vérifier les doublons par URL ET par feed_id
-                        existing = db.query(Article).filter(
-                            Article.link == link,
-                            Article.feed_id == feed.id
-                        ).first()
-                        
+                        existing = db.query(Article).filter(Article.link == link).first()
                         if not existing:
                             new_article = Article(
                                 title=entry.get("title", "Sans Titre"),
@@ -478,21 +474,10 @@ async def fetch_all_user_articles(user_id: int, db: Session = Depends(get_db)):
                             db.add(new_article)
                             articles_added += 1
                         else:
-                            # Mettre à jour seulement si nécessaire
-                            updated = False
-                            if entry.get("title", "") != existing.title:
-                                existing.title = entry.get("title", existing.title)
-                                updated = True
-                            if entry.get("published", "") != existing.published:
-                                existing.published = entry.get("published", existing.published)
-                                updated = True
-                            new_summary = entry.get("summary", "")[:800] if entry.get("summary") else ""
-                            if new_summary != existing.summary:
-                                existing.summary = new_summary
-                                updated = True
-                            
-                            if updated:
-                                articles_updated += 1
+                            existing.title = entry.get("title", existing.title)
+                            existing.published = entry.get("published", existing.published)
+                            existing.summary = entry.get("summary", existing.summary)[:800] if entry.get("summary") else existing.summary
+                            articles_updated += 1
 
                 feed.last_updated = get_french_time()
                 total_articles_added += articles_added
@@ -517,6 +502,51 @@ async def fetch_all_user_articles(user_id: int, db: Session = Depends(get_db)):
     except Exception as e:
         return {"error": f"Error fetching all user articles: {str(e)}"}
 
+@app.post("/feeds/{feed_id}/refresh")
+async def refresh_feed(feed_id: int, db: Session = Depends(get_db)):
+    try:
+        feed = db.query(Feed).filter(Feed.id == feed_id).first()
+        if not feed:
+            raise HTTPException(status_code=404, detail="Feed not found")
+        
+        rss_feed = feedparser.parse(feed.url)
+        articles_added = 0
+        articles_updated = 0
+
+        for entry in rss_feed.entries:
+            link = entry.get("link", "")
+            if link:
+                existing = db.query(Article).filter(Article.link == link).first()
+                if not existing:
+                    new_article = Article(
+                        title=entry.get("title", "Sans Titre"), 
+                        link=link, 
+                        published=entry.get("published", ""), 
+                        author=entry.get("author", ""), 
+                        summary=entry.get("summary", "")[:800] if entry.get("summary") else "", 
+                        feed_id=feed.id
+                    )
+                    db.add(new_article)
+                    articles_added += 1
+                else:
+                    existing.title = entry.get("title", existing.title)
+                    existing.published = entry.get("published", existing.published)
+                    existing.summary = entry.get("summary", existing.summary)[:800] if entry.get("summary") else existing.summary
+                    articles_updated += 1
+
+        feed.last_updated = get_french_time()
+        db.commit()
+        
+        message = f"Flux '{feed.title}' actualisé: {articles_added} nouveaux articles, {articles_updated} mis à jour"
+        return {
+            "message": message, 
+            "feed_id": feed_id, 
+            "articles_added": articles_added, 
+            "articles_updated": articles_updated
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur lors de l'actualisation: {str(e)}")
+    
 @app.get("/users/{user_id}/articles")
 async def get_user_articles(
     user_id: int, 
@@ -601,7 +631,7 @@ async def get_user_articles(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur récupération articles: {str(e)}")
-    
+
 @app.patch("/articles/{article_id}/read")
 async def toggle_article_read(
     article_id: int, 
@@ -637,67 +667,6 @@ async def toggle_article_favorite(
         return {"message": "Article favorite status updated", "article_id": article_id, "is_favorite": favorite_status}
     except Exception as e: 
         return {"error": f"Error: {str(e)}"}
-
-@app.post("/feeds/{feed_id}/refresh")
-async def refresh_feed(feed_id: int, db: Session = Depends(get_db)):
-    try:
-        feed = db.query(Feed).filter(Feed.id == feed_id).first()
-        if not feed:
-            raise HTTPException(status_code=404, detail="Feed not found")
-        
-        rss_feed = feedparser.parse(feed.url)
-        articles_added = 0
-        articles_updated = 0
-
-        for entry in rss_feed.entries:
-            link = entry.get("link", "")
-            if link:
-                # CORRECTION : Vérifier les doublons par URL ET par feed_id
-                existing = db.query(Article).filter(
-                    Article.link == link,
-                    Article.feed_id == feed.id
-                ).first()
-                
-                if not existing:
-                    new_article = Article(
-                        title=entry.get("title", "Sans Titre"), 
-                        link=link, 
-                        published=entry.get("published", ""), 
-                        author=entry.get("author", ""), 
-                        summary=entry.get("summary", "")[:800] if entry.get("summary") else "", 
-                        feed_id=feed.id
-                    )
-                    db.add(new_article)
-                    articles_added += 1
-                else:
-                    # Mettre à jour seulement si nécessaire
-                    updated = False
-                    if entry.get("title", "") != existing.title:
-                        existing.title = entry.get("title", existing.title)
-                        updated = True
-                    if entry.get("published", "") != existing.published:
-                        existing.published = entry.get("published", existing.published)
-                        updated = True
-                    new_summary = entry.get("summary", "")[:800] if entry.get("summary") else ""
-                    if new_summary != existing.summary:
-                        existing.summary = new_summary
-                        updated = True
-                    
-                    if updated:
-                        articles_updated += 1
-
-        feed.last_updated = get_french_time()
-        db.commit()
-        
-        message = f"Flux '{feed.title}' actualisé: {articles_added} nouveaux articles, {articles_updated} mis à jour"
-        return {
-            "message": message, 
-            "feed_id": feed_id, 
-            "articles_added": articles_added, 
-            "articles_updated": articles_updated
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erreur lors de l'actualisation: {str(e)}")
     
 # COLLECTIONS PARTAGÉES
 
@@ -741,7 +710,6 @@ async def create_collection(collection_data: CollectionCreate, owner_id: int = Q
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur création collection: {str(e)}")
-
 @app.get("/users/{user_id}/collections")
 async def get_user_collections(user_id: int, db: Session = Depends(get_db)):
     """Récupérer toutes les collections d'un utilisateur"""
@@ -833,7 +801,7 @@ async def invite_to_collection(collection_id: int, invite_data: CollectionInvite
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur invitation: {str(e)}")
-    
+
 @app.post("/collections/{collection_id}/feeds")
 async def add_feed_to_collection(collection_id: int, feed_data: CollectionFeedAdd, user_id: int = Query(...), db: Session = Depends(get_db)):
     """Ajouter un flux à une collection"""
@@ -943,10 +911,10 @@ async def get_collection_feeds(collection_id: int, user_id: int = Query(...), db
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur récupération flux: {str(e)}")
-
+    
 @app.post("/collections/{collection_id}/fetch-all-articles")
 async def fetch_collection_articles(collection_id: int, user_id: int = Query(...), db: Session = Depends(get_db)):
-    """Synchroniser tous les flux d'une collection - VERSION CORRIGÉE ANTI-DOUBLONS"""
+    """Synchroniser tous les flux d'une collection"""
     try:
         membership = db.query(CollectionMember).filter(
             CollectionMember.collection_id == collection_id,
@@ -985,48 +953,23 @@ async def fetch_collection_articles(collection_id: int, user_id: int = Query(...
                 for entry in reversed(rss_feed.entries):
                     link = entry.get("link", "")
                     if link:
-                        # CORRECTION : Vérifier les doublons par URL ET par feed_id
-                        existing = db.query(Article).filter(
-                            Article.link == link,
-                            Article.feed_id == feed.id  # Important : même flux
-                        ).first()
-                        
+                        existing = db.query(Article).filter(Article.link == link).first()
                         if not existing:
-                            # Vérifier aussi qu'un article identique n'existe pas déjà dans un autre flux
-                            duplicate_check = db.query(Article).filter(
-                                Article.link == link,
-                                Article.title == entry.get("title", "Sans Titre")
-                            ).first()
-                            
-                            if not duplicate_check:
-                                new_article = Article(
-                                    title=entry.get("title", "Sans Titre"),
-                                    link=link,
-                                    published=entry.get("published", ""),
-                                    author=entry.get("author", ""),
-                                    summary=entry.get("summary", "")[:800] if entry.get("summary") else "",
-                                    feed_id=feed.id
-                                )
-                                db.add(new_article)
-                                articles_added += 1
-                            else:
-                                print(f"Article dupliqué ignoré: {entry.get('title', 'Sans titre')}")
+                            new_article = Article(
+                                title=entry.get("title", "Sans Titre"),
+                                link=link,
+                                published=entry.get("published", ""),
+                                author=entry.get("author", ""),
+                                summary=entry.get("summary", "")[:800] if entry.get("summary") else "",
+                                feed_id=feed.id
+                            )
+                            db.add(new_article)
+                            articles_added += 1
                         else:
-                            # Mettre à jour seulement si nécessaire
-                            updated = False
-                            if entry.get("title", "") != existing.title:
-                                existing.title = entry.get("title", existing.title)
-                                updated = True
-                            if entry.get("published", "") != existing.published:
-                                existing.published = entry.get("published", existing.published)
-                                updated = True
-                            new_summary = entry.get("summary", "")[:800] if entry.get("summary") else ""
-                            if new_summary != existing.summary:
-                                existing.summary = new_summary
-                                updated = True
-                            
-                            if updated:
-                                articles_updated += 1
+                            existing.title = entry.get("title", existing.title)
+                            existing.published = entry.get("published", existing.published)
+                            existing.summary = entry.get("summary", existing.summary)[:800] if entry.get("summary") else existing.summary
+                            articles_updated += 1
 
                 feed.last_updated = get_french_time()
                 total_articles_added += articles_added
@@ -1053,7 +996,6 @@ async def fetch_collection_articles(collection_id: int, user_id: int = Query(...
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur synchronisation collection: {str(e)}")
 
-# NOUVELLE FONCTION : Nettoyage des doublons existants
 @app.post("/collections/{collection_id}/clean-duplicates")
 async def clean_collection_duplicates(collection_id: int, user_id: int = Query(...), db: Session = Depends(get_db)):
     """Nettoyer les articles dupliqués dans une collection"""
@@ -1067,7 +1009,6 @@ async def clean_collection_duplicates(collection_id: int, user_id: int = Query(.
         if not membership:
             raise HTTPException(status_code=403, detail="Permissions insuffisantes")
 
-        # Récupérer tous les flux de la collection
         collection_feed_ids = db.query(CollectionFeed.feed_id).filter(
             CollectionFeed.collection_id == collection_id
         ).all()
@@ -1077,8 +1018,6 @@ async def clean_collection_duplicates(collection_id: int, user_id: int = Query(.
         if not feed_ids:
             return {"message": "Aucun flux dans cette collection", "duplicates_removed": 0}
         
-        # Trouver les doublons par URL
-        from sqlalchemy import func
         duplicate_links = db.query(Article.link).filter(
             Article.feed_id.in_(feed_ids)
         ).group_by(Article.link).having(func.count(Article.id) > 1).all()
@@ -1086,13 +1025,11 @@ async def clean_collection_duplicates(collection_id: int, user_id: int = Query(.
         duplicates_removed = 0
         
         for (link,) in duplicate_links:
-            # Garder le plus ancien article, supprimer les autres
             articles = db.query(Article).filter(
                 Article.link == link,
                 Article.feed_id.in_(feed_ids)
             ).order_by(Article.created_at.asc()).all()
             
-            # Supprimer tous sauf le premier
             for article in articles[1:]:
                 db.delete(article)
                 duplicates_removed += 1
@@ -1108,7 +1045,7 @@ async def clean_collection_duplicates(collection_id: int, user_id: int = Query(.
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur nettoyage: {str(e)}")
-
+    
 @app.get("/collections/{collection_id}/articles")
 async def get_collection_articles(
     collection_id: int, 
@@ -1238,14 +1175,7 @@ async def filter_collection_articles(
             return {
                 "collection_id": collection_id,
                 "filters": {"read": read, "favorite": favorite, "search": search, "days": days, "feed_id": feed_id, "tags": tags},
-                "pagination": {
-                    "current_page": page,
-                    "per_page": per_page,
-                    "total_articles": 0,
-                    "total_pages": 0,
-                    "has_next": False,
-                    "has_previous": False
-                },
+                "pagination": {"current_page": page, "per_page": per_page, "total_articles": 0, "total_pages": 0, "has_next": False, "has_previous": False},
                 "articles": []
             }
         
@@ -1253,23 +1183,18 @@ async def filter_collection_articles(
         
         if read is not None:
             query = query.filter(Article.is_read == read)
-            
         if favorite is not None:
             query = query.filter(Article.is_favorite == favorite)
-            
         if search:
             query = query.filter(
                 (Article.title.ilike(f"%{search}%")) |
                 (Article.summary.ilike(f"%{search}%"))
             )
-        
         if days is not None:
             cutoff_date = get_french_time() - timedelta(days=days)
             query = query.filter(Article.created_at >= cutoff_date)
-        
         if feed_id is not None and feed_id in feed_ids:
             query = query.filter(Article.feed_id == feed_id)
-        
         if tags:
             feeds_with_tag = db.query(Feed.id).filter(
                 Feed.id.in_(feed_ids),
@@ -1281,7 +1206,6 @@ async def filter_collection_articles(
                     Feed.tags == tags
                 )
             ).all()
-            
             feed_ids_with_tag = [f[0] for f in feeds_with_tag]
             if feed_ids_with_tag:
                 query = query.filter(Article.feed_id.in_(feed_ids_with_tag))
@@ -1289,14 +1213,7 @@ async def filter_collection_articles(
                 return {
                     "collection_id": collection_id,
                     "filters": {"read": read, "favorite": favorite, "search": search, "days": days, "feed_id": feed_id, "tags": tags},
-                    "pagination": {
-                        "current_page": page,
-                        "per_page": per_page,
-                        "total_articles": 0,
-                        "total_pages": 0,
-                        "has_next": False,
-                        "has_previous": False
-                    },
+                    "pagination": {"current_page": page, "per_page": per_page, "total_articles": 0, "total_pages": 0, "has_next": False, "has_previous": False},
                     "articles": []
                 }
         
@@ -1351,7 +1268,7 @@ async def filter_collection_articles(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur filtrage articles collection: {str(e)}")
-    
+
 @app.get("/collections/{collection_id}/members")
 async def get_collection_members(collection_id: int, user_id: int = Query(...), db: Session = Depends(get_db)):
     """Récupérer les membres d'une collection"""
@@ -1388,23 +1305,40 @@ async def get_collection_members(collection_id: int, user_id: int = Query(...), 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur récupération membres: {str(e)}")
 
+# MESSAGERIE CORRIGÉE - CORRECTION PRINCIPALE POUR [object Object]
 @app.post("/collections/{collection_id}/messages")
-async def send_collection_message(collection_id: int, message_data: CollectionMessageCreate, user_id: int = Query(...), db: Session = Depends(get_db)):
-    """Envoyer un message dans une collection"""
+async def send_collection_message(collection_id: int, request: Request, user_id: int = Query(...), db: Session = Depends(get_db)):
+    """Envoyer un message dans une collection - VERSION CORRIGÉE FINALE"""
     try:
+        # Lire les données JSON manuellement comme dans l'endpoint debug
+        body = await request.body()
+        json_data = json.loads(body) if body else {}
+        
+        print(f"DEBUG: Tentative d'envoi message - Collection: {collection_id}, User: {user_id}")
+        print(f"DEBUG: Données reçues: {json_data}")
+        
+        message_text = json_data.get('message', '').strip()
+        article_id = json_data.get('article_id')
+        
+        # Vérifications de base
+        if not message_text:
+            return {"success": False, "error": "Le message ne peut pas être vide"}
+        
+        # Vérifier l'appartenance à la collection
         membership = db.query(CollectionMember).filter(
             CollectionMember.collection_id == collection_id,
             CollectionMember.user_id == user_id
         ).first()
         
         if not membership:
-            raise HTTPException(status_code=403, detail="Accès refusé à cette collection")
+            return {"success": False, "error": "Vous n'êtes pas membre de cette collection"}
         
+        # Créer le message
         new_message = CollectionMessage(
             collection_id=collection_id,
             user_id=user_id,
-            message=message_data.message,
-            article_id=message_data.article_id
+            message=message_text,
+            article_id=article_id if article_id else None
         )
         
         db.add(new_message)
@@ -1412,17 +1346,21 @@ async def send_collection_message(collection_id: int, message_data: CollectionMe
         db.refresh(new_message)
         
         return {
-            "id": new_message.id,
-            "collection_id": collection_id,
-            "user_id": user_id,
-            "message": new_message.message,
-            "article_id": new_message.article_id,
-            "created_at": new_message.created_at.isoformat()
+            "success": True,
+            "message": "Message envoyé avec succès",
+            "data": {
+                "id": new_message.id,
+                "collection_id": collection_id,
+                "user_id": user_id,
+                "message": new_message.message,
+                "article_id": new_message.article_id,
+                "created_at": new_message.created_at.isoformat()
+            }
         }
-    except HTTPException:
-        raise
+    
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erreur envoi message: {str(e)}")
+        print(f"DEBUG: Erreur: {str(e)}")
+        return {"success": False, "error": f"Erreur serveur: {str(e)}"}
 
 @app.get("/collections/{collection_id}/messages")
 async def get_collection_messages(collection_id: int, user_id: int = Query(...), article_id: int = Query(None), db: Session = Depends(get_db)):

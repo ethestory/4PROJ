@@ -6,13 +6,18 @@ import './App.css';
 const GOOGLE_CLIENT_ID = process.env.REACT_APP_GOOGLE_CLIENT_ID || "878235537833-s6enkhp3r37kjjmaqbiiepia0sv5gq1i.apps.googleusercontent.com";
 
 function App() {
+  // États principaux
   const [message, setMessage] = useState('');
   const [feeds, setFeeds] = useState([]);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [currentUser, setCurrentUser] = useState(null);
   const [currentUserId, setCurrentUserId] = useState(null);
+  
+  // États d'authentification
   const [loginData, setLoginData] = useState({ username: '', password: '' });
   const [registerData, setRegisterData] = useState({ username: '', email: '', password: '' });
+  
+  // États pour les flux
   const [newFeed, setNewFeed] = useState({ 
     title: '', 
     url: '', 
@@ -20,6 +25,8 @@ function App() {
     tags: '',
     update_frequency: 60
   });
+  
+  // États pour les articles
   const [articles, setArticles] = useState([]);
   const [filters, setFilters] = useState({
     read: null,
@@ -54,7 +61,8 @@ function App() {
   const [selectedArticleForComment, setSelectedArticleForComment] = useState(null);
   const [newCollectionFeed, setNewCollectionFeed] = useState({ url: '', title: '' });
 
-const handleRegister = async () => {
+// Fonctions d'authentification
+  const handleRegister = async () => {
     try {
       const result = await api.register(registerData.username, registerData.email, registerData.password);
       setMessage(result.message || 'Inscription réussie !');
@@ -230,7 +238,8 @@ const handleRegister = async () => {
     }, 100);
   };
 
-const loadFeeds = async () => {
+// Gestion des flux RSS
+  const loadFeeds = async () => {
     if (!currentUserId) {
       setMessage('Erreur: Aucun utilisateur connecté');
       return;
@@ -263,6 +272,7 @@ const loadFeeds = async () => {
     }
   };
 
+  // Gestion des articles
   const loadAllArticles = async (page = 1) => {
     if (!currentUserId) {
       setMessage('Erreur: Aucun utilisateur connecté');
@@ -333,8 +343,6 @@ const loadFeeds = async () => {
   };
 
 // Fonctions pour les collections partagées
-
-  // NOUVELLE FONCTION : Nettoyage des doublons
   const cleanCollectionDuplicates = async (collectionId) => {
     if (!currentUserId) return;
 
@@ -476,7 +484,7 @@ const loadFeeds = async () => {
     }
   };
 
-const inviteToCollection = async (collectionId) => {
+  const inviteToCollection = async (collectionId) => {
     if (!inviteEmail.trim()) {
       setMessage('Email requis pour l\'invitation');
       return;
@@ -517,32 +525,111 @@ const inviteToCollection = async (collectionId) => {
     }
   };
 
+// MESSAGERIE CORRIGÉE - CORRECTION PRINCIPALE
   const loadCollectionMessages = async (collectionId, articleId = null) => {
     if (!currentUserId) return;
 
     try {
       let url = `http://localhost:8000/collections/${collectionId}/messages?user_id=${currentUserId}`;
-      if (articleId) url += `&article_id=${articleId}`;
+      if (articleId) {
+        url += `&article_id=${articleId}`;
+      }
+      
+      console.log('DEBUG Frontend: Chargement messages depuis:', url);
       
       const response = await axios.get(url);
       setCollectionMessages(response.data.messages || []);
+      
+      console.log('DEBUG Frontend: Messages chargés:', response.data.messages?.length || 0);
     } catch (error) {
-      setMessage('Erreur lors du chargement des messages');
+      console.error('DEBUG Frontend: Erreur chargement messages:', error);
+      
+      let errorMessage = 'Erreur lors du chargement des messages';
+      if (error.response && error.response.data && error.response.data.detail) {
+        errorMessage += ': ' + error.response.data.detail;
+      }
+      
+      setMessage(errorMessage);
     }
   };
 
   const sendMessage = async (collectionId, articleId = null) => {
-    if (!newMessage.trim()) return;
+    if (!newMessage.trim()) {
+      setMessage('Veuillez saisir un message');
+      return;
+    }
+
+    if (!currentUserId) {
+      setMessage('Erreur: Utilisateur non connecté');
+      return;
+    }
 
     try {
-      await axios.post(`http://localhost:8000/collections/${collectionId}/messages?user_id=${currentUserId}`, {
-        message: newMessage,
+      const requestData = {
+        message: newMessage.trim(),
         article_id: articleId
-      });
+      };
+
+      console.log('DEBUG Frontend: Envoi message:', requestData);
+
+      const response = await axios.post(
+        `http://localhost:8000/collections/${collectionId}/messages?user_id=${currentUserId}`, 
+        requestData,
+        {
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+      
+      console.log('DEBUG Frontend: Réponse reçue:', response.data);
+      
       setNewMessage('');
-      loadCollectionMessages(collectionId, articleId);
+      await loadCollectionMessages(collectionId, articleId);
+      
+      if (articleId) {
+        setMessage('Commentaire ajouté');
+      } else {
+        setMessage('Message envoyé');
+      }
     } catch (error) {
-      setMessage('Erreur lors de l\'envoi du message: ' + (error.response?.data?.detail || error.message));
+      console.error('DEBUG Frontend: Erreur complète:', error);
+      console.error('DEBUG Frontend: Réponse serveur:', error.response);
+      
+      let errorMessage = 'Erreur lors de l\'envoi du message';
+      
+      if (error.response) {
+        // Vérifier d'abord le status code
+        if (error.response.status) {
+          errorMessage += ` (${error.response.status})`;
+        }
+        
+        // Puis essayer de récupérer le message d'erreur
+        if (error.response.data) {
+          if (typeof error.response.data === 'string') {
+            errorMessage += ': ' + error.response.data;
+          } else if (error.response.data.detail) {
+            errorMessage += ': ' + error.response.data.detail;
+          } else if (error.response.data.message) {
+            errorMessage += ': ' + error.response.data.message;
+          } else if (error.response.data.error) {
+            errorMessage += ': ' + error.response.data.error;
+          } else {
+            // Si c'est un objet complexe, le sérialiser proprement
+            try {
+              errorMessage += ': ' + JSON.stringify(error.response.data);
+            } catch (jsonError) {
+              errorMessage += ': Erreur de sérialisation de la réponse';
+            }
+          }
+        }
+      } else if (error.request) {
+        errorMessage += ': Pas de réponse du serveur';
+      } else {
+        errorMessage += ': ' + (error.message || 'Erreur inconnue');
+      }
+      
+      setMessage(errorMessage);
     }
   };
 
@@ -687,7 +774,7 @@ return (
 
               <p>{currentCollection.description}</p>
               
-              {/* Boutons de gestion comme pour les flux personnels */}
+              {/* Boutons de gestion */}
               <div style={{marginBottom: '20px', display: 'flex', gap: '10px'}}>
                 <button 
                   onClick={() => loadCollectionFeeds(currentCollection.id)}
@@ -804,7 +891,7 @@ return (
                 </div>
               </div>
 
-              {/* Filtres pour les articles de collection - SECTION AMÉLIORÉE */}
+{/* Filtres pour les articles de collection - AVEC FILTRE PAR FLUX */}
               <div style={{marginBottom: '20px', padding: '15px', backgroundColor: '#f9f9f9', border: '1px solid #ddd', borderRadius: '8px'}}>
                 <h5>Filtres des articles</h5>
                 
@@ -859,7 +946,7 @@ return (
                     <option value="false">Non favoris</option>
                   </select>
 
-                  {/* NOUVEAU: Filtre par flux */}
+                  {/* FILTRE PAR FLUX - AJOUTÉ */}
                   <select
                     value={filters.feed_id === null ? 'all' : filters.feed_id.toString()}
                     onChange={(e) => {
@@ -876,7 +963,7 @@ return (
                     ))}
                   </select>
 
-                  {/* NOUVEAU: Filtre par tags */}
+                  {/* FILTRE PAR TAGS - AJOUTÉ */}
                   <input
                     type="text"
                     placeholder="Filtrer par tags..."
@@ -927,7 +1014,7 @@ return (
                 </div>
               </div>
 
-{/* Articles de la collection */}
+              {/* Articles de la collection */}
               <div>
                 <h4>Articles de la collection ({collectionArticles.length})</h4>
                 {collectionArticles.length === 0 ? (
@@ -935,7 +1022,8 @@ return (
                     <p>Aucun article dans cette collection. Ajoutez des flux RSS pour voir des articles.</p>
                   </div>
                 ) : (
-                  collectionArticles.map(article => (
+
+collectionArticles.map(article => (
                     <div key={article.id} style={{border: '1px solid #ddd', padding: '15px', margin: '10px 0', backgroundColor: 'white', borderRadius: '5px'}}>
                       <div style={{fontSize: '14px', color: '#007bff', marginBottom: '10px', fontWeight: 'bold'}}>
                         {article.feed ? article.feed.title : 'Source inconnue'}
@@ -1192,7 +1280,7 @@ return (
                 )}
               </div>
 
-{/* Section Collections Partagées */}
+              {/* Section Collections Partagées */}
               <div style={{borderTop: '3px solid #28a745', paddingTop: '20px', marginTop: '30px'}}>
                 <h2 style={{color: '#28a745'}}>Collections Partagées</h2>
                 
