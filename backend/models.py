@@ -1,5 +1,5 @@
 # Déclaration des tables SQLAlchemy
-from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, ForeignKey, Index
 from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
 
@@ -88,3 +88,22 @@ class CollectionMessage(Base):
     message = Column(Text, nullable=False)
     article_id = Column(Integer, ForeignKey("articles.id"), nullable=True)  # Si commentaire sur article
     created_at = Column(DateTime, default=datetime.utcnow)
+
+class FeedPermission(Base):
+    """Modèle pour les permissions spécifiques par flux et par membre"""
+    __tablename__ = "feed_permissions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    collection_id = Column(Integer, ForeignKey("collections.id"), nullable=False)
+    feed_id = Column(Integer, ForeignKey("feeds.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    can_read = Column(Boolean, default=True)
+    can_modify = Column(Boolean, default=False)  # Modifier les articles (marquer lu/favori)
+    can_delete = Column(Boolean, default=False)  # Supprimer le flux de la collection
+    granted_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    granted_at = Column(DateTime, default=datetime.utcnow)
+
+    # Index unique pour éviter les doublons
+    __table_args__ = (
+        Index('idx_feed_permissions_unique', 'collection_id', 'feed_id', 'user_id', unique=True),
+    )
