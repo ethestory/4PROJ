@@ -1,5 +1,5 @@
 # main.py - PARTIE 1: IMPORTS ET CONFIGURATION
-from fastapi import FastAPI, HTTPException, Depends, Query, Request
+from fastapi import FastAPI, HTTPException, Depends, Query, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -12,6 +12,10 @@ import string
 import os
 from contextlib import asynccontextmanager
 import json
+import xml.etree.ElementTree as ET
+import csv
+from io import StringIO
+from fastapi.responses import Response
 
 # Imports pour Google OAuth2
 try:
@@ -449,7 +453,7 @@ async def register(user_data: UserCreate, db: Session = Depends(get_db)):
         return {"message": f"User {user_data.username} created successfully"}
     except Exception as e:
        return {"error": f"Registration failed: {str(e)}"}
-    
+
 # main.py - PARTIE 6: ENDPOINTS DE GESTION DES FLUX RSS
 
 @app.post("/feeds")
@@ -516,6 +520,144 @@ async def get_user_feeds(user_id: int, db: Session = Depends(get_db)):
         }
     except Exception as e:
         return {"error": f"Error fetching user feeds: {str(e)}"}
+
+@app.delete("/feeds/{feed_id}")
+async def delete_feed(feed_id: int, user_id: int = Query(...), db: Session = Depends(get_db)):
+    """Supprimer un flux RSS personnel (seul le propriétaire peut supprimer)"""
+    try:
+        # Récupérer le flux
+        feed = db.query(Feed).filter(Feed.id == feed_id).first()
+        
+        if not feed:
+            raise HTTPException(status_code=404, detail="Flux non trouvé")
+        
+        # Vérifier que l'utilisateur est le propriétaire du flux
+        if feed.owner_id != user_id:
+            raise HTTPException(status_code=403, detail="Seul le propriétaire peut supprimer ce flux")
+        
+        # Vérifier si le flux est utilisé dans des collections
+        collection_feeds = db.query(CollectionFeed).filter(
+            CollectionFeed.feed_id == feed_id
+        ).all()
+        
+        if collection_feeds:
+            # Le flux est utilisé dans des collections - demander confirmation ou proposer de le désactiver
+            collections_names = []
+            for cf in collection_feeds:
+                collection = db.query(Collection).filter(Collection.id == cf.collection_id).first()
+                if collection:
+                    collections_names.append(collection.name)
+            
+            return {
+                "error": "Flux utilisé dans des collections",
+                "message": f"Ce flux est utilisé dans les collections: {', '.join(collections_names)}. Supprimez-le d'abord de ces collections ou désactivez-le.",
+                "collections_count": len(collection_feeds),
+                "collections": collections_names,
+                "can_deactivate": True
+            }
+        
+        try:
+            # Supprimer d'abord tous les articles associés
+            articles_deleted = db.query(Article).filter(Article.feed_id == feed_id).count()
+            db.query(Article).filter(Article.feed_id == feed_id).delete()
+            
+            # Supprimer toutes les permissions spécifiques liées à ce flux
+            db.query(FeedPermission).filter(FeedPermission.feed_id == feed_id).delete()
+            
+            # Supprimer le flux lui-même
+            db.delete(feed)
+            
+            db.commit()
+            
+            return {
+                "message": f"Flux '{feed.title}' supprimé avec succès",
+                "deleted_feed_id": feed_id,
+                "deleted_articles_count": articles_deleted
+            }
+            
+        except Exception as e:
+            db.rollback()
+            raise HTTPException(status_code=500, detail=f"Erreur lors de la suppression: {str(e)}")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur: {str(e)}")
+
+@app.patch("/feeds/{feed_id}/toggle-active")
+async def toggle_feed_active(feed_id: int, user_id: int = Query(...), db: Session = Depends(get_db)):
+    """Activer/désactiver un flux RSS (alternative à la suppression)"""
+    try:
+        # Récupérer le flux
+        feed = db.query(Feed).filter(Feed.id == feed_id).first()
+        
+        if not feed:
+            raise HTTPException(status_code=404, detail="Flux non trouvé")
+        
+        # Vérifier que l'utilisateur est le propriétaire du flux
+        if feed.owner_id != user_id:
+            raise HTTPException(status_code=403, detail="Seul le propriétaire peut modifier ce flux")
+        
+        # Basculer le statut actif
+        feed.is_active = not feed.is_active
+        db.commit()
+        
+        status = "activé" if feed.is_active else "désactivé"
+        
+        return {
+            "message": f"Flux '{feed.title}' {status} avec succès",
+            "feed_id": feed_id,
+            "is_active": feed.is_active
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur: {str(e)}")
+
+@app.put("/feeds/{feed_id}")
+async def update_feed(feed_id: int, feed_data: FeedCreate, db: Session = Depends(get_db)):
+    """Modifier un flux RSS personnel"""
+    try:
+        # Récupérer le flux
+        feed = db.query(Feed).filter(Feed.id == feed_id).first()
+        
+        if not feed:
+            raise HTTPException(status_code=404, detail="Flux non trouvé")
+        
+        # Vérifier que l'utilisateur est le propriétaire du flux
+        if feed.owner_id != feed_data.owner_id:
+            raise HTTPException(status_code=403, detail="Seul le propriétaire peut modifier ce flux")
+        
+        # Mettre à jour les champs
+        feed.title = feed_data.title
+        feed.url = feed_data.url
+        feed.description = feed_data.description
+        feed.tags = feed_data.tags
+        feed.update_frequency = feed_data.update_frequency
+        
+        db.commit()
+        db.refresh(feed)
+        
+        return {
+            "message": f"Flux '{feed.title}' modifié avec succès",
+            "feed": {
+                "id": feed.id,
+                "title": feed.title,
+                "url": feed.url,
+                "description": feed.description,
+                "tags": feed.tags,
+                "update_frequency": feed.update_frequency,
+                "is_active": feed.is_active,
+                "last_updated": format_date_for_display(feed.last_updated.isoformat()) if feed.last_updated else None,
+                "created_at": format_date_for_display(feed.created_at.isoformat())
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur modification: {str(e)}")
 
 @app.post("/users/{user_id}/fetch-all-articles")
 async def fetch_all_user_articles(user_id: int, db: Session = Depends(get_db)):
@@ -634,7 +776,7 @@ async def refresh_feed(feed_id: int, db: Session = Depends(get_db)):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur lors de l'actualisation: {str(e)}")
-    
+
 # main.py - PARTIE 7: ENDPOINTS DE GESTION DES ARTICLES
 
 @app.get("/users/{user_id}/articles")
@@ -762,7 +904,7 @@ async def toggle_article_favorite(
     except Exception as e: 
         return {"error": f"Error: {str(e)}"}
 
-# main.py - PARTIE 8: ENDPOINTS DE GESTION DES COLLECTIONS
+# main.py - PARTIE 8: ENDPOINTS DE GESTION DES COLLECTIONS (AVEC SUPPRESSION)
 
 @app.post("/collections")
 async def create_collection(collection_data: CollectionCreate, owner_id: int = Query(...), db: Session = Depends(get_db)):
@@ -804,6 +946,111 @@ async def create_collection(collection_data: CollectionCreate, owner_id: int = Q
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur création collection: {str(e)}")
+
+@app.delete("/collections/{collection_id}")
+async def delete_collection(collection_id: int, user_id: int = Query(...), db: Session = Depends(get_db)):
+    """Supprimer une collection (seuls les propriétaires peuvent supprimer)"""
+    try:
+        # Récupérer la collection
+        collection = db.query(Collection).filter(Collection.id == collection_id).first()
+        
+        if not collection:
+            raise HTTPException(status_code=404, detail="Collection non trouvée")
+        
+        # Vérifier que l'utilisateur est le propriétaire de la collection
+        if collection.owner_id != user_id:
+            raise HTTPException(status_code=403, detail="Seul le propriétaire peut supprimer la collection")
+        
+        # Supprimer en cascade toutes les données liées à la collection
+        try:
+            # 1. Supprimer toutes les permissions spécifiques aux flux de cette collection
+            db.query(FeedPermission).filter(
+                FeedPermission.collection_id == collection_id
+            ).delete()
+            
+            # 2. Supprimer tous les messages de la collection
+            db.query(CollectionMessage).filter(
+                CollectionMessage.collection_id == collection_id
+            ).delete()
+            
+            # 3. Supprimer les associations flux-collection (mais pas les flux eux-mêmes)
+            db.query(CollectionFeed).filter(
+                CollectionFeed.collection_id == collection_id
+            ).delete()
+            
+            # 4. Supprimer tous les membres de la collection
+            db.query(CollectionMember).filter(
+                CollectionMember.collection_id == collection_id
+            ).delete()
+            
+            # 5. Supprimer la collection elle-même
+            db.delete(collection)
+            
+            db.commit()
+            
+            return {
+                "message": f"Collection '{collection.name}' supprimée avec succès",
+                "deleted_collection_id": collection_id
+            }
+            
+        except Exception as e:
+            db.rollback()
+            raise HTTPException(status_code=500, detail=f"Erreur lors de la suppression en cascade: {str(e)}")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la suppression de la collection: {str(e)}")
+
+@app.delete("/collections/{collection_id}/leave")
+async def leave_collection(collection_id: int, user_id: int = Query(...), db: Session = Depends(get_db)):
+    """Quitter une collection (pour les membres non-propriétaires)"""
+    try:
+        # Récupérer la collection
+        collection = db.query(Collection).filter(Collection.id == collection_id).first()
+        
+        if not collection:
+            raise HTTPException(status_code=404, detail="Collection non trouvée")
+        
+        # Vérifier que l'utilisateur n'est pas le propriétaire
+        if collection.owner_id == user_id:
+            raise HTTPException(status_code=400, detail="Le propriétaire ne peut pas quitter sa propre collection. Utilisez la suppression.")
+        
+        # Vérifier que l'utilisateur est membre de la collection
+        membership = db.query(CollectionMember).filter(
+            CollectionMember.collection_id == collection_id,
+            CollectionMember.user_id == user_id
+        ).first()
+        
+        if not membership:
+            raise HTTPException(status_code=404, detail="Vous n'êtes pas membre de cette collection")
+        
+        # Supprimer le membership et les permissions associées
+        try:
+            # Supprimer les permissions spécifiques de cet utilisateur pour cette collection
+            db.query(FeedPermission).filter(
+                FeedPermission.collection_id == collection_id,
+                FeedPermission.user_id == user_id
+            ).delete()
+            
+            # Supprimer le membership
+            db.delete(membership)
+            
+            db.commit()
+            
+            return {
+                "message": f"Vous avez quitté la collection '{collection.name}'",
+                "collection_id": collection_id
+            }
+            
+        except Exception as e:
+            db.rollback()
+            raise HTTPException(status_code=500, detail=f"Erreur lors de la sortie de la collection: {str(e)}")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur: {str(e)}")
 
 @app.get("/users/{user_id}/collections")
 async def get_user_collections(user_id: int, db: Session = Depends(get_db)):
@@ -896,179 +1143,6 @@ async def invite_to_collection(collection_id: int, invite_data: CollectionInvite
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur invitation: {str(e)}")
-
-@app.post("/collections/{collection_id}/feeds")
-async def add_feed_to_collection(collection_id: int, feed_data: CollectionFeedAdd, user_id: int = Query(...), db: Session = Depends(get_db)):
-    """Ajouter un flux à une collection"""
-    try:
-        # Vérifier les permissions de l'utilisateur
-        membership = db.query(CollectionMember).filter(
-            CollectionMember.collection_id == collection_id,
-            CollectionMember.user_id == user_id,
-            CollectionMember.permissions.in_(["admin", "write"])
-        ).first()
-        
-        if not membership:
-            raise HTTPException(status_code=403, detail="Permissions insuffisantes")
-        
-        # Créer ou trouver le flux
-        existing_feed = db.query(Feed).filter(Feed.url == feed_data.feed_url).first()
-        
-        if not existing_feed:
-            # Créer un nouveau flux
-            new_feed = Feed(
-                title=feed_data.feed_title or "Flux sans titre",
-                url=feed_data.feed_url,
-                description=feed_data.feed_description,
-                tags=feed_data.tags,
-                owner_id=user_id
-            )
-            db.add(new_feed)
-            db.commit()
-            db.refresh(new_feed)
-            feed_to_add = new_feed
-        else:
-            feed_to_add = existing_feed
-        
-        # Vérifier si le flux n'est pas déjà dans la collection
-        existing_collection_feed = db.query(CollectionFeed).filter(
-            CollectionFeed.collection_id == collection_id,
-            CollectionFeed.feed_id == feed_to_add.id
-        ).first()
-        
-        if existing_collection_feed:
-            raise HTTPException(status_code=400, detail="Ce flux est déjà dans la collection")
-        
-        # Ajouter le flux à la collection
-        collection_feed = CollectionFeed(
-            collection_id=collection_id,
-            feed_id=feed_to_add.id,
-            added_by_user_id=user_id
-        )
-        
-        db.add(collection_feed)
-        db.commit()
-        
-        return {
-            "message": "Flux ajouté à la collection",
-            "feed_id": feed_to_add.id,
-            "feed_title": feed_to_add.title
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erreur ajout flux: {str(e)}")
-
-@app.get("/collections/{collection_id}/feeds")
-async def get_collection_feeds(collection_id: int, user_id: int = Query(...), db: Session = Depends(get_db)):
-    """Récupérer les flux d'une collection avec permissions utilisateur"""
-    try:
-        # Vérifier l'accès à la collection
-        membership = db.query(CollectionMember).filter(
-            CollectionMember.collection_id == collection_id,
-            CollectionMember.user_id == user_id
-        ).first()
-        
-        if not membership:
-            raise HTTPException(status_code=403, detail="Accès refusé à cette collection")
-        
-        # Récupérer les flux de la collection avec informations sur qui les a ajoutés
-        feeds_query = db.query(CollectionFeed, Feed, User).join(
-            Feed, CollectionFeed.feed_id == Feed.id
-        ).join(
-            User, CollectionFeed.added_by_user_id == User.id
-        ).filter(
-            CollectionFeed.collection_id == collection_id
-        ).all()
-        
-        feeds_list = []
-        for collection_feed, feed, added_by_user in feeds_query:
-            # Récupérer les permissions de l'utilisateur pour ce flux
-            feed_permission = db.query(FeedPermission).filter(
-                FeedPermission.collection_id == collection_id,
-                FeedPermission.feed_id == feed.id,
-                FeedPermission.user_id == user_id
-            ).first()
-            
-            if feed_permission:
-                # Permissions spécifiques définies
-                permissions = {
-                    "can_read": feed_permission.can_read,
-                    "can_modify": feed_permission.can_modify,
-                    "can_delete": feed_permission.can_delete
-                }
-            else:
-                # Permissions par défaut basées sur le rôle dans la collection
-                if membership.permissions == "admin":
-                    permissions = {"can_read": True, "can_modify": True, "can_delete": True}
-                elif membership.permissions == "write":
-                    permissions = {"can_read": True, "can_modify": True, "can_delete": False}
-                else:  # read
-                    permissions = {"can_read": True, "can_modify": False, "can_delete": False}
-            
-            feeds_list.append({
-                "id": feed.id,
-                "title": feed.title,
-                "url": feed.url,
-                "description": feed.description,
-                "tags": getattr(feed, 'tags', "") or "",
-                "is_active": feed.is_active,
-                "last_updated": format_date_for_display(feed.last_updated.isoformat()) if feed.last_updated else None,
-                "created_at": format_date_for_display(feed.created_at.isoformat()),
-                "added_by": added_by_user.username,
-                "added_at": format_date_for_display(collection_feed.added_at.isoformat()),
-                "permissions": permissions
-            })
-        
-        return {
-            "collection_id": collection_id,
-            "feeds": feeds_list
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erreur récupération flux: {str(e)}")
-
-@app.delete("/collections/{collection_id}/feeds/{feed_id}")
-async def remove_feed_from_collection(
-    collection_id: int, 
-    feed_id: int, 
-    user_id: int = Query(...), 
-    db: Session = Depends(get_db)
-):
-    """Supprimer un flux d'une collection avec vérification des permissions"""
-    try:
-        # Vérifier les permissions de suppression
-        if not check_feed_permission(db, collection_id, feed_id, user_id, "delete"):
-            raise HTTPException(status_code=403, detail="Permissions insuffisantes pour supprimer ce flux")
-        
-        # Supprimer le flux de la collection
-        collection_feed = db.query(CollectionFeed).filter(
-            CollectionFeed.collection_id == collection_id,
-            CollectionFeed.feed_id == feed_id
-        ).first()
-        
-        if not collection_feed:
-            raise HTTPException(status_code=404, detail="Flux non trouvé dans cette collection")
-        
-        db.delete(collection_feed)
-        
-        # Supprimer aussi les permissions spécifiques pour ce flux dans cette collection
-        db.query(FeedPermission).filter(
-            FeedPermission.collection_id == collection_id,
-            FeedPermission.feed_id == feed_id
-        ).delete()
-        
-        db.commit()
-        
-        return {"message": "Flux supprimé de la collection"}
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erreur lors de la suppression: {str(e)}")
 
 # main.py - PARTIE 9: ENDPOINTS DE GESTION DES PERMISSIONS
 
@@ -1262,7 +1336,169 @@ async def get_my_feed_permissions(collection_id: int, user_id: int = Query(...),
     except Exception as e:
         return {"error": f"Erreur lors de la récupération des permissions: {str(e)}"}
 
-# main.py - PARTIE 10: ENDPOINTS ARTICLES DES COLLECTIONS
+# main.py - PARTIE 10: GESTION DES FLUX DE COLLECTIONS
+
+@app.post("/collections/{collection_id}/feeds")
+async def add_feed_to_collection(collection_id: int, feed_data: CollectionFeedAdd, user_id: int = Query(...), db: Session = Depends(get_db)):
+    """Ajouter un flux à une collection"""
+    try:
+        membership = db.query(CollectionMember).filter(
+            CollectionMember.collection_id == collection_id,
+            CollectionMember.user_id == user_id,
+            CollectionMember.permissions.in_(["admin", "write"])
+        ).first()
+        
+        if not membership:
+            raise HTTPException(status_code=403, detail="Permissions insuffisantes")
+        
+        existing_feed = db.query(Feed).filter(Feed.url == feed_data.feed_url).first()
+        
+        if not existing_feed:
+            new_feed = Feed(
+                title=feed_data.feed_title or "Flux sans titre",
+                url=feed_data.feed_url,
+                description=feed_data.feed_description,
+                tags=feed_data.tags,
+                owner_id=user_id
+            )
+            db.add(new_feed)
+            db.commit()
+            db.refresh(new_feed)
+            feed_to_add = new_feed
+        else:
+            feed_to_add = existing_feed
+        
+        existing_collection_feed = db.query(CollectionFeed).filter(
+            CollectionFeed.collection_id == collection_id,
+            CollectionFeed.feed_id == feed_to_add.id
+        ).first()
+        
+        if existing_collection_feed:
+            raise HTTPException(status_code=400, detail="Ce flux est déjà dans la collection")
+        
+        collection_feed = CollectionFeed(
+            collection_id=collection_id,
+            feed_id=feed_to_add.id,
+            added_by_user_id=user_id
+        )
+        
+        db.add(collection_feed)
+        db.commit()
+        
+        return {
+            "message": "Flux ajouté à la collection",
+            "feed_id": feed_to_add.id,
+            "feed_title": feed_to_add.title
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur ajout flux: {str(e)}")
+
+@app.get("/collections/{collection_id}/feeds")
+async def get_collection_feeds(collection_id: int, user_id: int = Query(...), db: Session = Depends(get_db)):
+    """Récupérer les flux d'une collection avec permissions utilisateur"""
+    try:
+        membership = db.query(CollectionMember).filter(
+            CollectionMember.collection_id == collection_id,
+            CollectionMember.user_id == user_id
+        ).first()
+        
+        if not membership:
+            raise HTTPException(status_code=403, detail="Accès refusé à cette collection")
+        
+        feeds_query = db.query(CollectionFeed, Feed, User).join(
+            Feed, CollectionFeed.feed_id == Feed.id
+        ).join(
+            User, CollectionFeed.added_by_user_id == User.id
+        ).filter(
+            CollectionFeed.collection_id == collection_id
+        ).all()
+        
+        feeds_list = []
+        for collection_feed, feed, added_by_user in feeds_query:
+            feed_permission = db.query(FeedPermission).filter(
+                FeedPermission.collection_id == collection_id,
+                FeedPermission.feed_id == feed.id,
+                FeedPermission.user_id == user_id
+            ).first()
+            
+            if feed_permission:
+                permissions = {
+                    "can_read": feed_permission.can_read,
+                    "can_modify": feed_permission.can_modify,
+                    "can_delete": feed_permission.can_delete
+                }
+            else:
+                if membership.permissions == "admin":
+                    permissions = {"can_read": True, "can_modify": True, "can_delete": True}
+                elif membership.permissions == "write":
+                    permissions = {"can_read": True, "can_modify": True, "can_delete": False}
+                else:
+                    permissions = {"can_read": True, "can_modify": False, "can_delete": False}
+            
+            feeds_list.append({
+                "id": feed.id,
+                "title": feed.title,
+                "url": feed.url,
+                "description": feed.description,
+                "tags": getattr(feed, 'tags', "") or "",
+                "is_active": feed.is_active,
+                "last_updated": format_date_for_display(feed.last_updated.isoformat()) if feed.last_updated else None,
+                "created_at": format_date_for_display(feed.created_at.isoformat()),
+                "added_by": added_by_user.username,
+                "added_at": format_date_for_display(collection_feed.added_at.isoformat()),
+                "permissions": permissions
+            })
+        
+        return {
+            "collection_id": collection_id,
+            "feeds": feeds_list
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur récupération flux: {str(e)}")
+
+@app.delete("/collections/{collection_id}/feeds/{feed_id}")
+async def remove_feed_from_collection(
+    collection_id: int, 
+    feed_id: int, 
+    user_id: int = Query(...), 
+    db: Session = Depends(get_db)
+):
+    """Supprimer un flux d'une collection avec vérification des permissions"""
+    try:
+        if not check_feed_permission(db, collection_id, feed_id, user_id, "delete"):
+            raise HTTPException(status_code=403, detail="Permissions insuffisantes pour supprimer ce flux")
+        
+        collection_feed = db.query(CollectionFeed).filter(
+            CollectionFeed.collection_id == collection_id,
+            CollectionFeed.feed_id == feed_id
+        ).first()
+        
+        if not collection_feed:
+            raise HTTPException(status_code=404, detail="Flux non trouvé dans cette collection")
+        
+        db.delete(collection_feed)
+        
+        db.query(FeedPermission).filter(
+            FeedPermission.collection_id == collection_id,
+            FeedPermission.feed_id == feed_id
+        ).delete()
+        
+        db.commit()
+        
+        return {"message": "Flux supprimé de la collection"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la suppression: {str(e)}")
+
+# main.py - PARTIE 11: ARTICLES DES COLLECTIONS
 
 @app.get("/collections/{collection_id}/articles")
 async def get_collection_articles_with_permissions(
@@ -1274,7 +1510,6 @@ async def get_collection_articles_with_permissions(
 ):
     """Récupérer les articles d'une collection en filtrant selon les permissions de lecture"""
     try:
-        # Vérifier l'accès à la collection
         membership = db.query(CollectionMember).filter(
             CollectionMember.collection_id == collection_id,
             CollectionMember.user_id == user_id
@@ -1283,12 +1518,10 @@ async def get_collection_articles_with_permissions(
         if not membership:
             raise HTTPException(status_code=403, detail="Accès refusé à cette collection")
         
-        # Récupérer tous les flux de la collection
         collection_feeds = db.query(CollectionFeed).filter(
             CollectionFeed.collection_id == collection_id
         ).all()
         
-        # Filtrer les flux selon les permissions de lecture
         allowed_feed_ids = []
         for cf in collection_feeds:
             if check_feed_permission(db, collection_id, cf.feed_id, user_id, "read"):
@@ -1308,7 +1541,6 @@ async def get_collection_articles_with_permissions(
                 "articles": []
             }
         
-        # Récupérer tous les articles des flux autorisés
         all_articles_query = db.query(Article, Feed).join(
             Feed, Article.feed_id == Feed.id
         ).filter(
@@ -1317,15 +1549,13 @@ async def get_collection_articles_with_permissions(
         
         all_articles = all_articles_query.all()
         
-        # Convertir et trier
         articles_list = []
         for article, feed in all_articles:
-            article.feed = feed  # Attacher l'objet feed pour get_sort_key
+            article.feed = feed
             articles_list.append(article)
         
         articles_list.sort(key=get_sort_key, reverse=True)
         
-        # Pagination
         total_articles = len(articles_list)
         total_pages = (total_articles + per_page - 1) // per_page
         start_idx = (page - 1) * per_page
@@ -1384,12 +1614,10 @@ async def toggle_collection_article_read(
 ):
     """Modifier le statut de lecture d'un article avec vérification des permissions"""
     try:
-        # Récupérer l'article et vérifier qu'il appartient à un flux de la collection
         article = db.query(Article).filter(Article.id == article_id).first()
         if not article:
             raise HTTPException(status_code=404, detail="Article non trouvé")
         
-        # Vérifier que le flux de l'article est dans la collection
         collection_feed = db.query(CollectionFeed).filter(
             CollectionFeed.collection_id == collection_id,
             CollectionFeed.feed_id == article.feed_id
@@ -1398,7 +1626,6 @@ async def toggle_collection_article_read(
         if not collection_feed:
             raise HTTPException(status_code=404, detail="Article non trouvé dans cette collection")
         
-        # Vérifier les permissions de modification
         if not check_feed_permission(db, collection_id, article.feed_id, user_id, "modify"):
             raise HTTPException(status_code=403, detail="Permissions insuffisantes pour modifier ce flux")
         
@@ -1422,12 +1649,10 @@ async def toggle_collection_article_favorite(
 ):
     """Modifier le statut de favori d'un article avec vérification des permissions"""
     try:
-        # Récupérer l'article et vérifier qu'il appartient à un flux de la collection
         article = db.query(Article).filter(Article.id == article_id).first()
         if not article:
             raise HTTPException(status_code=404, detail="Article non trouvé")
         
-        # Vérifier que le flux de l'article est dans la collection
         collection_feed = db.query(CollectionFeed).filter(
             CollectionFeed.collection_id == collection_id,
             CollectionFeed.feed_id == article.feed_id
@@ -1436,7 +1661,6 @@ async def toggle_collection_article_favorite(
         if not collection_feed:
             raise HTTPException(status_code=404, detail="Article non trouvé dans cette collection")
         
-        # Vérifier les permissions de modification
         if not check_feed_permission(db, collection_id, article.feed_id, user_id, "modify"):
             raise HTTPException(status_code=403, detail="Permissions insuffisantes pour modifier ce flux")
         
@@ -1454,7 +1678,6 @@ async def toggle_collection_article_favorite(
 async def fetch_collection_articles(collection_id: int, user_id: int = Query(...), db: Session = Depends(get_db)):
     """Synchroniser tous les flux d'une collection"""
     try:
-        # Vérifier l'accès à la collection
         membership = db.query(CollectionMember).filter(
             CollectionMember.collection_id == collection_id,
             CollectionMember.user_id == user_id
@@ -1463,7 +1686,6 @@ async def fetch_collection_articles(collection_id: int, user_id: int = Query(...
         if not membership:
             raise HTTPException(status_code=403, detail="Accès refusé à cette collection")
         
-        # Récupérer tous les flux de la collection
         collection_feeds = db.query(CollectionFeed, Feed).join(
             Feed, CollectionFeed.feed_id == Feed.id
         ).filter(
@@ -1528,27 +1750,21 @@ async def fetch_collection_articles(collection_id: int, user_id: int = Query(...
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur synchronisation: {str(e)}")
 
-# main.py - PARTIE 11: ENDPOINTS DE MESSAGERIE
+# main.py - PARTIE 12: MESSAGERIE ET OUTILS
 
 @app.post("/collections/{collection_id}/messages")
 async def send_collection_message(collection_id: int, request: Request, user_id: int = Query(...), db: Session = Depends(get_db)):
     """Envoyer un message dans une collection"""
     try:
-        # Lire les données JSON manuellement
         body = await request.body()
         json_data = json.loads(body) if body else {}
-        
-        print(f"DEBUG: Tentative d'envoi message - Collection: {collection_id}, User: {user_id}")
-        print(f"DEBUG: Données reçues: {json_data}")
         
         message_text = json_data.get('message', '').strip()
         article_id = json_data.get('article_id')
         
-        # Vérifications de base
         if not message_text:
             return {"success": False, "error": "Le message ne peut pas être vide"}
         
-        # Vérifier l'appartenance à la collection
         membership = db.query(CollectionMember).filter(
             CollectionMember.collection_id == collection_id,
             CollectionMember.user_id == user_id
@@ -1557,7 +1773,6 @@ async def send_collection_message(collection_id: int, request: Request, user_id:
         if not membership:
             return {"success": False, "error": "Vous n'êtes pas membre de cette collection"}
         
-        # Créer le message
         new_message = CollectionMessage(
             collection_id=collection_id,
             user_id=user_id,
@@ -1568,8 +1783,6 @@ async def send_collection_message(collection_id: int, request: Request, user_id:
         db.add(new_message)
         db.commit()
         db.refresh(new_message)
-        
-        print(f"DEBUG: Message créé avec succès - ID: {new_message.id}")
         
         return {
             "success": True,
@@ -1585,7 +1798,6 @@ async def send_collection_message(collection_id: int, request: Request, user_id:
         }
     
     except Exception as e:
-        print(f"DEBUG: Erreur: {str(e)}")
         return {"success": False, "error": f"Erreur serveur: {str(e)}"}
 
 @app.get("/collections/{collection_id}/messages")
@@ -1636,7 +1848,6 @@ async def get_collection_messages(collection_id: int, user_id: int = Query(...),
 async def get_collection_members(collection_id: int, user_id: int = Query(...), db: Session = Depends(get_db)):
     """Récupérer les membres d'une collection"""
     try:
-        # Vérifier l'accès à la collection
         membership = db.query(CollectionMember).filter(
             CollectionMember.collection_id == collection_id,
             CollectionMember.user_id == user_id
@@ -1645,7 +1856,6 @@ async def get_collection_members(collection_id: int, user_id: int = Query(...), 
         if not membership:
             raise HTTPException(status_code=403, detail="Accès refusé à cette collection")
         
-        # Récupérer tous les membres
         members_query = db.query(CollectionMember, User).join(
             User, CollectionMember.user_id == User.id
         ).filter(CollectionMember.collection_id == collection_id).all()
@@ -1674,7 +1884,6 @@ async def get_collection_members(collection_id: int, user_id: int = Query(...), 
 async def clean_collection_duplicates(collection_id: int, user_id: int = Query(...), db: Session = Depends(get_db)):
     """Nettoyer les articles en double dans une collection"""
     try:
-        # Vérifier l'accès à la collection
         membership = db.query(CollectionMember).filter(
             CollectionMember.collection_id == collection_id,
             CollectionMember.user_id == user_id,
@@ -1684,7 +1893,6 @@ async def clean_collection_duplicates(collection_id: int, user_id: int = Query(.
         if not membership:
             raise HTTPException(status_code=403, detail="Permissions insuffisantes")
         
-        # Récupérer tous les flux de la collection
         collection_feeds = db.query(CollectionFeed).filter(
             CollectionFeed.collection_id == collection_id
         ).all()
@@ -1694,13 +1902,9 @@ async def clean_collection_duplicates(collection_id: int, user_id: int = Query(.
         if not feed_ids:
             return {"message": "Aucun flux dans cette collection"}
         
-        # Trouver les doublons par URL
         duplicates_removed = 0
-        
-        # Récupérer tous les articles des flux de la collection
         articles = db.query(Article).filter(Article.feed_id.in_(feed_ids)).all()
         
-        # Grouper par URL
         url_groups = {}
         for article in articles:
             if article.link in url_groups:
@@ -1708,13 +1912,10 @@ async def clean_collection_duplicates(collection_id: int, user_id: int = Query(.
             else:
                 url_groups[article.link] = [article]
         
-        # Supprimer les doublons (garder le plus récent)
         for url, article_group in url_groups.items():
             if len(article_group) > 1:
-                # Trier par date de création (le plus récent en premier)
                 article_group.sort(key=lambda x: x.created_at, reverse=True)
                 
-                # Supprimer tous sauf le premier (le plus récent)
                 for article_to_delete in article_group[1:]:
                     db.delete(article_to_delete)
                     duplicates_removed += 1
@@ -1731,7 +1932,7 @@ async def clean_collection_duplicates(collection_id: int, user_id: int = Query(.
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur nettoyage: {str(e)}")
 
-# main.py - PARTIE 12: ENDPOINTS DE FILTRAGE ET POINT D'ENTRÉE
+# main.py - PARTIE 13: FILTRAGE ET POINT D'ENTRÉE
 
 @app.get("/collections/{collection_id}/articles/filter")
 async def filter_collection_articles(
@@ -1749,7 +1950,6 @@ async def filter_collection_articles(
 ):
     """Filtrer les articles d'une collection selon différents critères"""
     try:
-        # Vérifier l'accès à la collection
         membership = db.query(CollectionMember).filter(
             CollectionMember.collection_id == collection_id,
             CollectionMember.user_id == user_id
@@ -1758,12 +1958,10 @@ async def filter_collection_articles(
         if not membership:
             raise HTTPException(status_code=403, detail="Accès refusé à cette collection")
         
-        # Récupérer tous les flux de la collection auxquels l'utilisateur a accès
         collection_feeds = db.query(CollectionFeed).filter(
             CollectionFeed.collection_id == collection_id
         ).all()
         
-        # Filtrer les flux selon les permissions de lecture
         allowed_feed_ids = []
         for cf in collection_feeds:
             if check_feed_permission(db, collection_id, cf.feed_id, user_id, "read"):
@@ -1772,65 +1970,44 @@ async def filter_collection_articles(
         if not allowed_feed_ids:
             return {
                 "collection_id": collection_id,
-                "pagination": {
-                    "current_page": page,
-                    "per_page": per_page,
-                    "total_articles": 0,
-                    "total_pages": 0,
-                    "has_next": False,
-                    "has_previous": False
-                },
+                "pagination": {"current_page": page, "per_page": per_page, "total_articles": 0, "total_pages": 0, "has_next": False, "has_previous": False},
                 "articles": []
             }
         
-        # Construire la requête de base
         query = db.query(Article, Feed).join(
             Feed, Article.feed_id == Feed.id
-        ).filter(
-            Article.feed_id.in_(allowed_feed_ids)
-        )
+        ).filter(Article.feed_id.in_(allowed_feed_ids))
         
-        # Appliquer les filtres
         if read is not None:
             query = query.filter(Article.is_read == read)
-        
         if favorite is not None:
             query = query.filter(Article.is_favorite == favorite)
-        
         if search:
             search_term = f"%{search}%"
-            query = query.filter(
-                or_(
-                    Article.title.ilike(search_term),
-                    Article.summary.ilike(search_term),
-                    Article.author.ilike(search_term),
-                    Feed.title.ilike(search_term)
-                )
-            )
-        
+            query = query.filter(or_(
+                Article.title.ilike(search_term),
+                Article.summary.ilike(search_term),
+                Article.author.ilike(search_term),
+                Feed.title.ilike(search_term)
+            ))
         if feed_id:
             query = query.filter(Article.feed_id == feed_id)
-        
         if tags:
             tags_term = f"%{tags}%"
             query = query.filter(Feed.tags.ilike(tags_term))
-        
         if days:
             cutoff_date = datetime.utcnow() - timedelta(days=days)
             query = query.filter(Article.created_at >= cutoff_date)
         
-        # Récupérer tous les résultats
         all_results = query.all()
         
-        # Convertir et trier
         articles_list = []
         for article, feed in all_results:
-            article.feed = feed  # Attacher l'objet feed pour get_sort_key
+            article.feed = feed
             articles_list.append(article)
         
         articles_list.sort(key=get_sort_key, reverse=True)
         
-        # Pagination
         total_articles = len(articles_list)
         total_pages = (total_articles + per_page - 1) // per_page
         start_idx = (page - 1) * per_page
@@ -1879,7 +2056,475 @@ async def filter_collection_articles(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur filtrage articles: {str(e)}")
 
-# POINT D'ENTRÉE DE L'APPLICATION
+@app.delete("/collections/{collection_id}/members/{user_id}")
+async def remove_member_from_collection(
+    collection_id: int, 
+    user_id: int, 
+    requester_id: int = Query(...), 
+    db: Session = Depends(get_db)
+):
+    """Retirer un membre d'une collection (seuls les propriétaires peuvent retirer)"""
+    try:
+        # Vérifier que le requérant est propriétaire de la collection
+        collection = db.query(Collection).filter(Collection.id == collection_id).first()
+        if not collection or collection.owner_id != requester_id:
+            raise HTTPException(status_code=403, detail="Seul le propriétaire peut retirer des membres")
+        
+        # Vérifier que le membre à retirer n'est pas le propriétaire
+        if user_id == collection.owner_id:
+            raise HTTPException(status_code=400, detail="Impossible de retirer le propriétaire")
+        
+        # Supprimer le membre
+        membership = db.query(CollectionMember).filter(
+            CollectionMember.collection_id == collection_id,
+            CollectionMember.user_id == user_id
+        ).first()
+        
+        if not membership:
+            raise HTTPException(status_code=404, detail="Membre non trouvé")
+        
+        db.delete(membership)
+        db.commit()
+        
+        return {"message": "Membre retiré avec succès"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur: {str(e)}")
+    
+@app.patch("/collections/{collection_id}/members/{user_id}/permissions")
+async def update_member_permissions(
+    collection_id: int, 
+    user_id: int, 
+    permission_data: dict,
+    requester_id: int = Query(...), 
+    db: Session = Depends(get_db)
+):
+    """Modifier les permissions d'un membre (seuls les propriétaires peuvent modifier)"""
+    try:
+        # Vérifier que le requérant est propriétaire
+        collection = db.query(Collection).filter(Collection.id == collection_id).first()
+        if not collection or collection.owner_id != requester_id:
+            raise HTTPException(status_code=403, detail="Seul le propriétaire peut modifier les permissions")
+        
+        # Trouver le membership à modifier
+        membership = db.query(CollectionMember).filter(
+            CollectionMember.collection_id == collection_id,
+            CollectionMember.user_id == user_id
+        ).first()
+        
+        if not membership:
+            raise HTTPException(status_code=404, detail="Membre non trouvé")
+        
+        # Ne pas modifier les permissions du propriétaire
+        if user_id == collection.owner_id:
+            raise HTTPException(status_code=400, detail="Impossible de modifier les droits du propriétaire")
+        
+        # Mettre à jour les permissions
+        membership.permissions = permission_data.get('permissions', 'read')
+        db.commit()
+        
+        return {"message": "Permissions mises à jour"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur: {str(e)}")
+
+@app.delete("/collections/{collection_id}/members/{user_id}")
+async def remove_member_from_collection(
+    collection_id: int, 
+    user_id: int, 
+    requester_id: int = Query(...), 
+    db: Session = Depends(get_db)
+):
+    """Retirer un membre d'une collection (seuls les propriétaires peuvent retirer)"""
+    try:
+        # Vérifier que le requérant est propriétaire
+        collection = db.query(Collection).filter(Collection.id == collection_id).first()
+        if not collection or collection.owner_id != requester_id:
+            raise HTTPException(status_code=403, detail="Seul le propriétaire peut retirer des membres")
+        
+        # Ne pas retirer le propriétaire
+        if user_id == collection.owner_id:
+            raise HTTPException(status_code=400, detail="Impossible de retirer le propriétaire")
+        
+        # Supprimer le membre
+        membership = db.query(CollectionMember).filter(
+            CollectionMember.collection_id == collection_id,
+            CollectionMember.user_id == user_id
+        ).first()
+        
+        if not membership:
+            raise HTTPException(status_code=404, detail="Membre non trouvé")
+        
+        db.delete(membership)
+        db.commit()
+        
+        return {"message": "Membre retiré avec succès"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur: {str(e)}")
+
+
+@app.get("/users/{user_id}/export/opml")
+async def export_feeds_opml(user_id: int, db: Session = Depends(get_db)):
+    """Exporter les flux d'un utilisateur au format OPML"""
+    try:
+        # Vérifier que l'utilisateur existe
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
+
+        # Récupérer les flux de l'utilisateur
+        feeds = db.query(Feed).filter(Feed.owner_id == user_id).all()
+        
+        # Créer le document OPML
+        root = ET.Element("opml", version="1.0")
+        head = ET.SubElement(root, "head")
+        title = ET.SubElement(head, "title")
+        title.text = f"Flux RSS de {user.username} - SUPRSS Export"
+        
+        body = ET.SubElement(root, "body")
+        
+        for feed in feeds:
+            outline = ET.SubElement(body, "outline", 
+                                  text=feed.title,
+                                  title=feed.title,
+                                  type="rss",
+                                  xmlUrl=feed.url,
+                                  htmlUrl=feed.url)
+            
+            if feed.description:
+                outline.set("description", feed.description)
+            if feed.tags:
+                outline.set("category", feed.tags)
+        
+        # Convertir en string
+        xml_str = ET.tostring(root, encoding='unicode', xml_declaration=True)
+        
+        return Response(
+            content=xml_str,
+            media_type="application/xml",
+            headers={"Content-Disposition": f"attachment; filename=suprss_feeds_{user.username}.opml"}
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur lors de l'export OPML: {str(e)}")
+
+@app.get("/users/{user_id}/export/json")
+async def export_feeds_json(user_id: int, db: Session = Depends(get_db)):
+    """Exporter les flux d'un utilisateur au format JSON"""
+    try:
+        # Vérifier que l'utilisateur existe
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
+
+        # Récupérer les flux de l'utilisateur
+        feeds = db.query(Feed).filter(Feed.owner_id == user_id).all()
+        
+        export_data = {
+            "export_info": {
+                "user": user.username,
+                "export_date": get_french_time().isoformat(),
+                "source": "SUPRSS",
+                "feeds_count": len(feeds)
+            },
+            "feeds": []
+        }
+        
+        for feed in feeds:
+            export_data["feeds"].append({
+                "title": feed.title,
+                "url": feed.url,
+                "description": feed.description or "",
+                "tags": feed.tags or "",
+                "update_frequency": feed.update_frequency,
+                "is_active": feed.is_active,
+                "created_at": feed.created_at.isoformat(),
+                "last_updated": feed.last_updated.isoformat() if feed.last_updated else None
+            })
+        
+        json_str = json.dumps(export_data, indent=2, ensure_ascii=False)
+        
+        return Response(
+            content=json_str,
+            media_type="application/json",
+            headers={"Content-Disposition": f"attachment; filename=suprss_feeds_{user.username}.json"}
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur lors de l'export JSON: {str(e)}")
+
+@app.get("/users/{user_id}/export/csv")
+async def export_feeds_csv(user_id: int, db: Session = Depends(get_db)):
+    """Exporter les flux d'un utilisateur au format CSV"""
+    try:
+        # Vérifier que l'utilisateur existe
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
+
+        # Récupérer les flux de l'utilisateur
+        feeds = db.query(Feed).filter(Feed.owner_id == user_id).all()
+        
+        # Créer le CSV
+        output = StringIO()
+        writer = csv.writer(output)
+        
+        # En-têtes
+        writer.writerow([
+            "Titre", "URL", "Description", "Tags", 
+            "Fréquence_MAJ", "Actif", "Date_Création", "Dernière_MAJ"
+        ])
+        
+        # Données
+        for feed in feeds:
+            writer.writerow([
+                feed.title,
+                feed.url,
+                feed.description or "",
+                feed.tags or "",
+                feed.update_frequency,
+                "Oui" if feed.is_active else "Non",
+                feed.created_at.strftime("%d/%m/%Y %H:%M"),
+                feed.last_updated.strftime("%d/%m/%Y %H:%M") if feed.last_updated else ""
+            ])
+        
+        csv_content = output.getvalue()
+        output.close()
+        
+        return Response(
+            content=csv_content,
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename=suprss_feeds_{user.username}.csv"}
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur lors de l'export CSV: {str(e)}")
+
+# ENDPOINTS D'IMPORT
+
+@app.post("/users/{user_id}/import/opml")
+async def import_feeds_opml(user_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """Importer des flux depuis un fichier OPML"""
+    try:
+        # Vérifier que l'utilisateur existe
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
+
+        # Lire le fichier
+        content = await file.read()
+        
+        try:
+            root = ET.fromstring(content.decode('utf-8'))
+        except Exception as e:
+            raise HTTPException(status_code=400, detail="Fichier OPML invalide")
+        
+        imported_count = 0
+        skipped_count = 0
+        errors = []
+        
+        # Parser les flux
+        for outline in root.findall(".//outline[@type='rss']") + root.findall(".//outline[@xmlUrl]"):
+            try:
+                title = outline.get('text') or outline.get('title', 'Flux sans titre')
+                xml_url = outline.get('xmlUrl')
+                
+                if not xml_url:
+                    continue
+                
+                # Vérifier si le flux existe déjà
+                existing = db.query(Feed).filter(
+                    Feed.url == xml_url, 
+                    Feed.owner_id == user_id
+                ).first()
+                
+                if existing:
+                    skipped_count += 1
+                    continue
+                
+                new_feed = Feed(
+                    title=title,
+                    url=xml_url,
+                    description=outline.get('description', ''),
+                    tags=outline.get('category', ''),
+                    owner_id=user_id,
+                    update_frequency=60
+                )
+                
+                db.add(new_feed)
+                imported_count += 1
+                
+            except Exception as e:
+                errors.append(f"Erreur sur flux '{title}': {str(e)}")
+        
+        db.commit()
+        
+        return {
+            "message": f"Import terminé: {imported_count} flux importés, {skipped_count} ignorés",
+            "imported": imported_count,
+            "skipped": skipped_count,
+            "errors": errors[:5]  # Limiter les erreurs affichées
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur lors de l'import OPML: {str(e)}")
+
+@app.post("/users/{user_id}/import/json")
+async def import_feeds_json(user_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """Importer des flux depuis un fichier JSON"""
+    try:
+        # Vérifier que l'utilisateur existe
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
+
+        # Lire le fichier
+        content = await file.read()
+        
+        try:
+            data = json.loads(content.decode('utf-8'))
+        except Exception as e:
+            raise HTTPException(status_code=400, detail="Fichier JSON invalide")
+        
+        if 'feeds' not in data:
+            raise HTTPException(status_code=400, detail="Format JSON invalide: clé 'feeds' manquante")
+        
+        imported_count = 0
+        skipped_count = 0
+        errors = []
+        
+        for feed_data in data['feeds']:
+            try:
+                title = feed_data.get('title', 'Flux sans titre')
+                url = feed_data.get('url')
+                
+                if not url:
+                    continue
+                
+                # Vérifier si le flux existe déjà
+                existing = db.query(Feed).filter(
+                    Feed.url == url, 
+                    Feed.owner_id == user_id
+                ).first()
+                
+                if existing:
+                    skipped_count += 1
+                    continue
+                
+                new_feed = Feed(
+                    title=title,
+                    url=url,
+                    description=feed_data.get('description', ''),
+                    tags=feed_data.get('tags', ''),
+                    update_frequency=feed_data.get('update_frequency', 60),
+                    owner_id=user_id
+                )
+                
+                db.add(new_feed)
+                imported_count += 1
+                
+            except Exception as e:
+                errors.append(f"Erreur sur flux '{title}': {str(e)}")
+        
+        db.commit()
+        
+        return {
+            "message": f"Import terminé: {imported_count} flux importés, {skipped_count} ignorés",
+            "imported": imported_count,
+            "skipped": skipped_count,
+            "errors": errors[:5]
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur lors de l'import JSON: {str(e)}")
+
+@app.post("/users/{user_id}/import/csv")
+async def import_feeds_csv(user_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """Importer des flux depuis un fichier CSV"""
+    try:
+        # Vérifier que l'utilisateur existe
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
+
+        # Lire le fichier
+        content = await file.read()
+        
+        try:
+            csv_content = content.decode('utf-8')
+            csv_reader = csv.DictReader(StringIO(csv_content))
+        except Exception as e:
+            raise HTTPException(status_code=400, detail="Fichier CSV invalide")
+        
+        imported_count = 0
+        skipped_count = 0
+        errors = []
+        
+        for row in csv_reader:
+            try:
+                title = row.get('Titre', 'Flux sans titre')
+                url = row.get('URL')
+                
+                if not url:
+                    continue
+                
+                # Vérifier si le flux existe déjà
+                existing = db.query(Feed).filter(
+                    Feed.url == url, 
+                    Feed.owner_id == user_id
+                ).first()
+                
+                if existing:
+                    skipped_count += 1
+                    continue
+                
+                # Convertir la fréquence
+                try:
+                    frequency = int(row.get('Fréquence_MAJ', 60))
+                except:
+                    frequency = 60
+                
+                new_feed = Feed(
+                    title=title,
+                    url=url,
+                    description=row.get('Description', ''),
+                    tags=row.get('Tags', ''),
+                    update_frequency=frequency,
+                    owner_id=user_id
+                )
+                
+                db.add(new_feed)
+                imported_count += 1
+                
+            except Exception as e:
+                errors.append(f"Erreur sur flux '{title}': {str(e)}")
+        
+        db.commit()
+        
+        return {
+            "message": f"Import terminé: {imported_count} flux importés, {skipped_count} ignorés",
+            "imported": imported_count,
+            "skipped": skipped_count,
+            "errors": errors[:5]
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur lors de l'import CSV: {str(e)}")
+
+# POINT D'ENTRÉE
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
