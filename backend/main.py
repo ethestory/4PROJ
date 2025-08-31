@@ -345,7 +345,7 @@ async def google_oauth(auth_data: GoogleAuthRequest, db: Session = Depends(get_d
 
         if GOOGLE_AUTH_AVAILABLE:
             try:
-                GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "878235537833-s6enkhp3r37kjjmaqbiiepia0sv5gq1i.apps.googleusercontent.com")
+                GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
                 idinfo = id_token.verify_oauth2_token(
                     auth_data.google_token, 
                     google_requests.Request(), 
