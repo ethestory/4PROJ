@@ -12,7 +12,10 @@ function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [currentUser, setCurrentUser] = useState(null);
   const [currentUserId, setCurrentUserId] = useState(null);
-  
+  const isValidEmail = (email) => {
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  return emailRegex.test(email);
+};
   // États d'authentification
   const [loginData, setLoginData] = useState({ username: '', password: '' });
   const [registerData, setRegisterData] = useState({ username: '', email: '', password: '' });
@@ -193,15 +196,41 @@ function App() {
   };
 
   // Fonctions d'authentification
-  const handleRegister = async () => {
-    try {
-      const result = await api.register(registerData.username, registerData.email, registerData.password);
-      setMessage(result.message || 'Inscription réussie !');
-      setRegisterData({ username: '', email: '', password: '' });
-    } catch (error) {
-      setMessage('Erreur inscription : ' + (error.response?.data?.error || error.message));
+ const handleRegister = async () => {
+  try {
+    // Validation côté client
+    if (!registerData.username.trim()) {
+      setMessage('Erreur: Le nom d\'utilisateur est requis');
+      return;
     }
-  };
+    
+    if (!registerData.email.trim()) {
+      setMessage('Erreur: L\'email est requis');
+      return;
+    }
+    
+    if (!isValidEmail(registerData.email)) {
+      setMessage('Erreur: Veuillez saisir une adresse email valide');
+      return;
+    }
+    
+    if (!registerData.password.trim()) {
+      setMessage('Erreur: Le mot de passe est requis');
+      return;
+    }
+    
+    if (registerData.password.length < 6) {
+      setMessage('Erreur: Le mot de passe doit contenir au moins 6 caractères');
+      return;
+    }
+
+    const result = await api.register(registerData.username, registerData.email, registerData.password);
+    setMessage(result.message || 'Inscription réussie !');
+    setRegisterData({ username: '', email: '', password: '' });
+  } catch (error) {
+    setMessage('Erreur inscription : ' + (error.response?.data?.error || error.message));
+  }
+};
 
   const handleLogin = async () => {
     try {
