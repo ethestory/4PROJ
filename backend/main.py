@@ -266,7 +266,6 @@ class CollectionMessageCreate(BaseModel):
     message: str
     article_id: int = None
 
-# Nouveaux modèles pour les permissions par flux
 class FeedPermissionCreate(BaseModel):
     feed_id: int
     user_id: int
@@ -318,6 +317,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+#Endpoint pour vérifier l'état de l'application
 @app.get("/")
 async def root():
     return {"message": "SUPRSS API is running!"}
@@ -409,7 +409,8 @@ async def google_oauth(auth_data: GoogleAuthRequest, db: Session = Depends(get_d
             "error": f"Erreur lors de l'authentification Google: {str(e)}",
             "user": None
         }
-
+    
+# Connexion user locale
 @app.post("/login")
 async def login(user_data: UserLogin, db: Session = Depends(get_db)):
     try:
@@ -426,6 +427,7 @@ async def login(user_data: UserLogin, db: Session = Depends(get_db)):
     except Exception as e:
         return {"error": f"Login failed: {str(e)}"}
 
+# Inscription user local
 @app.post("/register")
 async def register(user_data: UserCreate, db: Session = Depends(get_db)):
     try:
@@ -455,7 +457,7 @@ async def register(user_data: UserCreate, db: Session = Depends(get_db)):
        return {"error": f"Registration failed: {str(e)}"}
 
 # main.py - PARTIE 6: ENDPOINTS DE GESTION DES FLUX RSS
-
+#Création du flux
 @app.post("/feeds")
 async def create_feed(feed_data: FeedCreate, db: Session = Depends(get_db)):
     try:
@@ -488,7 +490,7 @@ async def create_feed(feed_data: FeedCreate, db: Session = Depends(get_db)):
         }
     except Exception as e:
         return {"error": f"Error creating feed: {str(e)}"}
-
+#Flux par utilisateur
 @app.get("/users/{user_id}/feeds")
 async def get_user_feeds(user_id: int, db: Session = Depends(get_db)):
     try:
@@ -659,6 +661,7 @@ async def update_feed(feed_id: int, feed_data: FeedCreate, db: Session = Depends
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur modification: {str(e)}")
 
+#Récupérer les articles du flux
 @app.post("/users/{user_id}/fetch-all-articles")
 async def fetch_all_user_articles(user_id: int, db: Session = Depends(get_db)):
     try:
@@ -731,7 +734,8 @@ async def fetch_all_user_articles(user_id: int, db: Session = Depends(get_db)):
         }
     except Exception as e:
         return {"error": f"Error fetching all user articles: {str(e)}"}
-
+    
+#Refresh du flux
 @app.post("/feeds/{feed_id}/refresh")
 async def refresh_feed(feed_id: int, db: Session = Depends(get_db)):
     try:
@@ -778,7 +782,7 @@ async def refresh_feed(feed_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Erreur lors de l'actualisation: {str(e)}")
 
 # main.py - PARTIE 7: ENDPOINTS DE GESTION DES ARTICLES
-
+#récupérer les articles
 @app.get("/users/{user_id}/articles")
 async def get_user_articles(
     user_id: int, 
@@ -864,6 +868,8 @@ async def get_user_articles(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur récupération articles: {str(e)}")
 
+# Article lu
+
 @app.patch("/articles/{article_id}/read")
 async def toggle_article_read(
     article_id: int, 
@@ -881,6 +887,8 @@ async def toggle_article_read(
         return {"message": "Article status updated", "article_id": article_id, "is_read": read_status}
     except Exception as e:
         return {"error": f"Error: {str(e)}"}
+
+#Mis en favoris l'article
 
 @app.patch("/articles/{article_id}/favorite")
 async def toggle_article_favorite(
