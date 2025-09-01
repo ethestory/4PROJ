@@ -59,6 +59,7 @@ docker compose up --build -d
 # (optionnel) Créer les tables si besoin
 curl -X POST http://localhost:8000/create-tables
 ```
+---
 ## 3) Variables d’environnement (.env)
 
 Exemple minimal :
@@ -76,6 +77,8 @@ CORS_ALLOWED_ORIGINS=http://localhost:3000
 
     Tous les secrets sont stockés dans .env
 
+---
+
 ## 4) Choix techniques
 
     FastAPI : framework léger et rapide, documentation auto (OpenAPI/Swagger).
@@ -91,6 +94,8 @@ CORS_ALLOWED_ORIGINS=http://localhost:3000
     OAuth2 (Google) : connexion simplifiée.
 
     Docker Compose : orchestration reproductible.
+
+---
 
 ## 5) Modèle de données
 ### 5.1 Tables principales
@@ -113,6 +118,8 @@ CORS_ALLOWED_ORIGINS=http://localhost:3000
 
 ## 5.2 Schéma BDD
 Schéma disponible dans le fichier schema_bdd.png
+
+---
 
 ## 6) Fonctionnalités majeures
 ### 6.1 Authentification
@@ -152,6 +159,8 @@ Schéma disponible dans le fichier schema_bdd.png
     Export en OPML, JSON, CSV.
 
     Import via fichiers OPML, JSON, CSV.
+
+---
 
 ## 7) API REST — aperçu
 
@@ -196,6 +205,8 @@ Base : http://localhost:8000
 
     POST /users/{id}/import/opml|json|csv
 
+---
+
 ## 8) Sécurité
 
     Hashage des mots de passe via bcrypt.
@@ -214,6 +225,7 @@ Base : http://localhost:8000
 
     Gestionnaire de secrets.
 
+---
 
 ## 9) Guide de déploiement résumé
 
@@ -224,6 +236,8 @@ Base : http://localhost:8000
     API → http://localhost:8000 ; Frontend → http://localhost:3000
 
     Vérifier la santé via GET /health.
+
+---
 
 ## 10) Conclusion
 
