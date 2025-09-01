@@ -46,7 +46,7 @@ Le projet inclut un fichier `docker-compose.yml` orchestrant trois services :
 #### Étapes de déploiement
 ```bash
 # Cloner le dépôt
-git clone <url-du-repo>
+git clone https://github.com/ethestory/4PROJ
 cd SUPRSS
 
 # Configurer l'environnement
@@ -54,11 +54,11 @@ cp .env.example .env
 # → compléter avec vos secrets (BD, OAuth, etc.)
 
 # Lancer le projet
-docker compose up --build
+docker compose up --build -d
 
 # (optionnel) Créer les tables si besoin
 curl -X POST http://localhost:8000/create-tables
-
+```
 ## 3) Variables d’environnement (.env)
 
 Exemple minimal :
