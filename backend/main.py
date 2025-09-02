@@ -868,6 +868,111 @@ async def get_user_articles(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur récupération articles: {str(e)}")
 
+@app.get("/users/{user_id}/articles/filter")
+async def filter_user_articles(
+    user_id: int,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(20, ge=1, le=100),
+    read: bool | None = Query(None),
+    favorite: bool | None = Query(None),
+    search: str = Query(""),
+    days: int | None = Query(None),
+    feed_id: int | None = Query(None),
+    tags: str = Query(""),
+    db: Session = Depends(get_db)
+):
+    try:
+        # Vérifier l'utilisateur
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Tous les feeds de l'utilisateur
+        user_feed_ids = [fid for (fid,) in db.query(Feed.id).filter(Feed.owner_id == user_id).all()]
+        if not user_feed_ids:
+            return {
+                "user_id": user_id,
+                "pagination": {"current_page": page, "per_page": per_page, "total_articles": 0, "total_pages": 0, "has_next": False, "has_previous": False},
+                "articles": []
+            }
+
+        # Base query
+        query = db.query(Article, Feed).join(Feed, Article.feed_id == Feed.id).filter(Article.feed_id.in_(user_feed_ids))
+
+        # Filtres
+        if read is not None:
+            query = query.filter(Article.is_read == read)
+        if favorite is not None:
+            query = query.filter(Article.is_favorite == favorite)
+        if search:
+            like = f"%{search}%"
+            query = query.filter(or_(Article.title.ilike(like), Article.summary.ilike(like), Article.author.ilike(like), Feed.title.ilike(like)))
+        if feed_id:
+            query = query.filter(Article.feed_id == feed_id)
+        if tags:
+            tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+            if tag_list:
+                ors = [func.lower(Feed.tags).ilike(f"%{t.lower()}%") for t in tag_list]
+                query = query.filter(or_(*ors))
+        if days:
+            cutoff = datetime.utcnow() - timedelta(days=days)
+            query = query.filter(Article.created_at >= cutoff)
+
+        # Récup + tri
+        rows = query.all()
+        articles = []
+        for article, feed in rows:
+            article.feed = feed
+            articles.append(article)
+        articles.sort(key=get_sort_key, reverse=True)
+
+        # Pagination
+        total = len(articles)
+        total_pages = (total + per_page - 1) // per_page
+        start, end = (page - 1) * per_page, (page - 1) * per_page + per_page
+        page_items = articles[start:end]
+
+        return {
+            "user_id": user_id,
+            "pagination": {
+                "current_page": page,
+                "per_page": per_page,
+                "total_articles": total,
+                "total_pages": total_pages,
+                "has_next": page < total_pages,
+                "has_previous": page > 1
+            },
+            "articles": [
+                {
+                    "id": a.id,
+                    "title": a.title,
+                    "link": a.link,
+                    "published": format_date_for_display(a.published) if a.published else a.created_at.strftime("%d/%m/%Y %H:%M"),
+                    "author": a.author,
+                    "summary": a.summary[:400] + "..." if len(a.summary or "") > 400 else a.summary,
+                    "is_read": a.is_read,
+                    "is_favorite": a.is_favorite,
+                    "created_at": a.created_at.isoformat(),
+                    "feed": {
+                        "id": a.feed.id,
+                        "title": a.feed.title,
+                        "url": a.feed.url,
+                        "tags": getattr(a.feed, "tags", "") or ""
+                    } if getattr(a, "feed", None) else {
+                        "id": a.feed_id,
+                        "title": "Flux inconnu",
+                        "url": "",
+                        "tags": ""
+                    }
+                }
+                for a in page_items
+            ]
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur filtrage articles utilisateur: {str(e)}")
+
 # Article lu
 
 @app.patch("/articles/{article_id}/read")
@@ -2001,8 +2106,10 @@ async def filter_collection_articles(
         if feed_id:
             query = query.filter(Article.feed_id == feed_id)
         if tags:
-            tags_term = f"%{tags}%"
-            query = query.filter(Feed.tags.ilike(tags_term))
+            tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+            if tag_list:
+                ors = [func.lower(Feed.tags).ilike(f"%{t.lower()}%") for t in tag_list]
+                query = query.filter(or_(*ors))
         if days:
             cutoff_date = datetime.utcnow() - timedelta(days=days)
             query = query.filter(Article.created_at >= cutoff_date)

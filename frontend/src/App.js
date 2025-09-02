@@ -3,52 +3,85 @@ import axios from 'axios';
 import { api } from './api';
 import './App.css';
 
-// Configuration sécurisée - NE JAMAIS mettre de clés en dur !
-const GOOGLE_CLIENT_ID = process.env.REACT_APP_GOOGLE_CLIENT_ID || "";
+const GOOGLE_CLIENT_ID = process.env.REACT_APP_GOOGLE_CLIENT_ID || (process.env.REACT_APP_GOOGLE_CLIENT_ID || "");
 
+
+// --- Composant: bulles de tags (Mes Articles uniquement) ---
+function TagChips({ tags = [], selected = [], onChange }) {
+  if (!Array.isArray(tags) || tags.length === 0) return null;
+
+  const isActive = (t) => Array.isArray(selected) && selected.includes(t);
+  const toggle = (t) => {
+    const next = isActive(t) ? selected.filter(x => x !== t) : [...(selected || []), t];
+    if (typeof onChange === 'function') onChange(next);
+  };
+
+  return (
+    <div style={{display:'flex', flexWrap:'wrap', gap:'8px'}}>
+      {tags.map(tag => (
+        <button
+          key={tag}
+          type="button"
+          onClick={() => toggle(tag)}
+          aria-pressed={isActive(tag)}
+          style={{
+            padding: '6px 10px',
+            borderRadius: '9999px',
+            fontSize: '12px',
+            border: '1px solid ' + (isActive(tag) ? '#0d6efd' : '#ddd'),
+            backgroundColor: isActive(tag) ? '#0d6efd' : '#f3f4f6',
+            color: isActive(tag) ? '#fff' : '#111',
+            cursor: 'pointer'
+          }}
+        >
+          {tag}
+        </button>
+      ))}
+    </div>
+  );
+}
 function App() {
-  // ========================================
-  // ÉTATS DE L'APPLICATION
-  // ========================================
-  
-  // Message d'information pour l'utilisateur
+  // --- shim ajouté pour éviter no-undef et router proprement les requêtes ---
+  function filterArticlesForUser(pageOverride = 1) {
+    try {
+      const pageArg = typeof page !== "undefined" ? pageOverride : 1;
+      if (typeof applyFilters === "function") {
+        const nf = (typeof filters !== "undefined") ? filters : undefined;
+        applyFilters(nf, pageArg);
+      } else if (typeof loadAllArticles === "function") {
+        loadAllArticles(pageArg);
+      } else {
+        console.warn("Aucune fonction de fetch détectée (applyFilters / loadAllArticles).");
+      }
+    } catch (e) {
+      console.error("filterArticlesForUser shim error:", e);
+    }
+  }
+
+  // États principaux
   const [message, setMessage] = useState('');
-  
-  // Données des flux RSS
   const [feeds, setFeeds] = useState([]);
-  
-  // Gestion de l'authentification
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [currentUser, setCurrentUser] = useState(null);
   const [currentUserId, setCurrentUserId] = useState(null);
-
-  // Validation des emails - regex basique mais fonctionnelle
   const isValidEmail = (email) => {
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    return emailRegex.test(email);
-  };
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  return emailRegex.test(email);
+};
+  // États d'authentification
+  const [loginData, setLoginData] = useState({ username: '', password: '' });
+  const [registerData, setRegisterData] = useState({ username: '', email: '', password: '' });
   
-  // Formulaires de connexion et inscription
-  const [loginData, setLoginData] = useState({ 
-    username: '', 
-    password: '' 
-  });
-  const [registerData, setRegisterData] = useState({ 
-    username: '', 
-    email: '', 
-    password: '' 
-  });
-  
-  // Formulaire de création de flux
+  // États pour les flux
   const [newFeed, setNewFeed] = useState({ 
     title: '', 
     url: '', 
     description: '',
     tags: '',
-    update_frequency: 60  // Par défaut 1 heure
+    update_frequency: 60
   });
   
-  // Gestion des articles avec pagination
+  // États pour les articles
   const [articles, setArticles] = useState([]);
   const [filters, setFilters] = useState({
     read: null,
@@ -58,8 +91,20 @@ function App() {
     feed_id: null,
     tags: ''
   });
-  
-  // Système de pagination
+  // Tags (chips) pour Mes Articles
+  const [availableUserTags, setAvailableUserTags] = useState([]);
+  const [selectedUserTags, setSelectedUserTags] = useState([]);
+
+  // Construire la liste de tags disponibles depuis les flux de l'utilisateur
+  React.useEffect(() => {
+    const set = new Set();
+    (feeds || []).forEach(f => {
+      const raw = (f.tags || '').split(',').map(s => s.trim()).filter(Boolean);
+      raw.forEach(t => set.add(t));
+    });
+    setAvailableUserTags(Array.from(set).sort((a,b) => a.localeCompare(b)));
+  }, [feeds]);
+
   const [pagination, setPagination] = useState({
     current_page: 1,
     per_page: 20,
@@ -70,36 +115,22 @@ function App() {
   });
   const [currentPage, setCurrentPage] = useState(1);
 
-  // ========================================
-  // GESTION DES COLLECTIONS PARTAGÉES
-  // ========================================
-  
+  // États pour les collections partagées
   const [collections, setCollections] = useState([]);
   const [currentCollection, setCurrentCollection] = useState(null);
   const [collectionArticles, setCollectionArticles] = useState([]);
   const [collectionMembers, setCollectionMembers] = useState([]);
   const [collectionMessages, setCollectionMessages] = useState([]);
   const [collectionFeeds, setCollectionFeeds] = useState([]);
-  
-  // Formulaires pour les collections
   const [showCreateCollection, setShowCreateCollection] = useState(false);
-  const [newCollection, setNewCollection] = useState({ 
-    name: '', 
-    description: '', 
-    is_private: false 
-  });
-  
-  // Gestion des invitations et messages
+  const [newCollection, setNewCollection] = useState({ name: '', description: '', is_private: false });
   const [inviteEmail, setInviteEmail] = useState('');
   const [newMessage, setNewMessage] = useState('');
   const [selectedArticleForComment, setSelectedArticleForComment] = useState(null);
   const [newCollectionFeed, setNewCollectionFeed] = useState({ url: '', title: '' });
   const [invitePermissions, setInvitePermissions] = useState('write');
 
-  // ========================================
-  // ÉDITION DE FLUX
-  // ========================================
-  
+  // États pour l'édition de flux
   const [editingFeed, setEditingFeed] = useState(null);
   const [editFeedData, setEditFeedData] = useState({
     title: '',
@@ -109,22 +140,15 @@ function App() {
     update_frequency: 60
   });
 
-  // ========================================
-  // IMPORT/EXPORT
-  // ========================================
-  
+  // États pour import/export
   const [showImportExport, setShowImportExport] = useState(false);
   const [importFile, setImportFile] = useState(null);
   const [importFormat, setImportFormat] = useState('opml');
   const [isImporting, setIsImporting] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
 
-  // ========================================
-  // FONCTIONS D'EXPORT
-  // ========================================
-
+// Fonctions d'export
   const exportFeeds = async (format) => {
-    // Vérification de sécurité
     if (!currentUserId) {
       setMessage('Erreur: Aucun utilisateur connecté');
       return;
@@ -134,7 +158,6 @@ function App() {
     setMessage(`Export ${format.toUpperCase()} en cours...`);
     
     try {
-      // Construction de l'URL d'export
       const response = await fetch(`http://localhost:8000/users/${currentUserId}/export/${format}`, {
         method: 'GET',
       });
@@ -143,7 +166,6 @@ function App() {
         throw new Error(`Erreur ${response.status}: ${response.statusText}`);
       }
       
-      // Récupération du nom du fichier depuis les headers
       const contentDisposition = response.headers.get('Content-Disposition');
       let filename = `suprss_feeds_export.${format}`;
       
@@ -154,7 +176,6 @@ function App() {
         }
       }
       
-      // Téléchargement automatique du fichier
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
@@ -162,8 +183,6 @@ function App() {
       link.download = filename;
       document.body.appendChild(link);
       link.click();
-      
-      // Nettoyage
       document.body.removeChild(link);
       window.URL.revokeObjectURL(url);
       
@@ -175,17 +194,13 @@ function App() {
     }
   };
 
-  // ========================================
-  // FONCTIONS D'IMPORT
-  // ========================================
-  
+  // Fonction d'import
   const importFeeds = async () => {
     if (!currentUserId || !importFile) {
       setMessage('Erreur: Fichier requis pour l\'import');
       return;
     }
     
-    // Validation du format de fichier
     const fileExtension = importFile.name.split('.').pop().toLowerCase();
     const validExtensions = {
       'opml': ['opml', 'xml'],
@@ -202,11 +217,9 @@ function App() {
     setMessage(`Import ${importFormat.toUpperCase()} en cours...`);
     
     try {
-      // Préparation des données
       const formData = new FormData();
       formData.append('file', importFile);
       
-      // Envoi de la requête
       const response = await fetch(`http://localhost:8000/users/${currentUserId}/import/${importFormat}`, {
         method: 'POST',
         body: formData,
@@ -220,15 +233,11 @@ function App() {
       
       setMessage(result.message || 'Import terminé avec succès !');
       
-      // Affichage des éventuelles erreurs
       if (result.errors && result.errors.length > 0) {
         setMessage(prev => prev + `\n\nErreurs détectées:\n${result.errors.join('\n')}`);
       }
       
-      // Rechargement des données
       await loadFeeds();
-      
-      // Nettoyage du formulaire
       setImportFile(null);
       document.getElementById('import-file-input').value = '';
       
@@ -239,11 +248,9 @@ function App() {
     }
   };
 
-  // Gestion de sélection de fichier avec validation
   const handleFileChange = (event) => {
     const file = event.target.files[0];
     if (file) {
-      // Vérification de la taille (limite à 5MB)
       if (file.size > 5 * 1024 * 1024) {
         setMessage('Erreur: Le fichier est trop volumineux (max 5MB)');
         return;
@@ -254,97 +261,76 @@ function App() {
     }
   };
 
-  // ========================================
-  // FONCTIONS D'AUTHENTIFICATION
-  // ========================================
-  
-  const handleRegister = async () => {
-    try {
-      // Validation côté client pour une meilleure UX
-      if (!registerData.username.trim()) {
-        setMessage('Erreur: Le nom d\'utilisateur est requis');
-        return;
-      }
-      
-      if (!registerData.email.trim()) {
-        setMessage('Erreur: L\'email est requis');
-        return;
-      }
-      
-      if (!isValidEmail(registerData.email)) {
-        setMessage('Erreur: Veuillez saisir une adresse email valide');
-        return;
-      }
-      
-      if (!registerData.password.trim()) {
-        setMessage('Erreur: Le mot de passe est requis');
-        return;
-      }
-      
-      // Sécurité minimum pour les mots de passe
-      if (registerData.password.length < 6) {
-        setMessage('Erreur: Le mot de passe doit contenir au moins 6 caractères');
-        return;
-      }
-
-      const result = await api.register(registerData.username, registerData.email, registerData.password);
-      setMessage(result.message || 'Inscription réussie !');
-      
-      // Nettoyage du formulaire
-      setRegisterData({ username: '', email: '', password: '' });
-    } catch (error) {
-      setMessage('Erreur inscription : ' + (error.response?.data?.error || error.message));
+  // Fonctions d'authentification
+ const handleRegister = async () => {
+  try {
+    // Validation côté client
+    if (!registerData.username.trim()) {
+      setMessage('Erreur: Le nom d\'utilisateur est requis');
+      return;
     }
-  };
+    
+    if (!registerData.email.trim()) {
+      setMessage('Erreur: L\'email est requis');
+      return;
+    }
+    
+    if (!isValidEmail(registerData.email)) {
+      setMessage('Erreur: Veuillez saisir une adresse email valide');
+      return;
+    }
+    
+    if (!registerData.password.trim()) {
+      setMessage('Erreur: Le mot de passe est requis');
+      return;
+    }
+    
+    if (registerData.password.length < 6) {
+      setMessage('Erreur: Le mot de passe doit contenir au moins 6 caractères');
+      return;
+    }
+
+    const result = await api.register(registerData.username, registerData.email, registerData.password);
+    setMessage(result.message || 'Inscription réussie !');
+    setRegisterData({ username: '', email: '', password: '' });
+  } catch (error) {
+    setMessage('Erreur inscription : ' + (error.response?.data?.error || error.message));
+  }
+};
 
   const handleLogin = async () => {
     try {
       const result = await api.login(loginData.username, loginData.password);
-      
       if (result.error) {
         setMessage('Erreur : ' + result.error);
         return;
       }
       
-      // Mise à jour de l'état global
       setMessage(result.message || 'Connexion réussie !');
       setIsLoggedIn(true);
       setCurrentUser(loginData.username);
       setCurrentUserId(result.user_id);
-      
-      // Nettoyage du formulaire
       setLoginData({ username: '', password: '' });
       
-      // Réinitialisation des données pour le nouvel utilisateur
-      resetUserData();
+      setFeeds([]);
+      setArticles([]);
+      setPagination({
+        current_page: 1,
+        per_page: 20,
+        total_articles: 0,
+        total_pages: 0,
+        has_next: false,
+        has_previous: false
+      });
+      setCurrentPage(1);
       
     } catch (error) {
       setMessage('Erreur connexion : ' + (error.response?.data?.error || error.message));
     }
   };
 
-  // Fonction utilitaire pour réinitialiser les données utilisateur
-  const resetUserData = () => {
-    setFeeds([]);
-    setArticles([]);
-    setPagination({
-      current_page: 1,
-      per_page: 20,
-      total_articles: 0,
-      total_pages: 0,
-      has_next: false,
-      has_previous: false
-    });
-    setCurrentPage(1);
-  };
-
-  // ========================================
-  // AUTHENTIFICATION GOOGLE
-  // ========================================
-  
   const handleGoogleResponse = async (response) => {
     try {
-      // Décodage du JWT Google (partie payload)
       const payload = JSON.parse(atob(response.credential.split('.')[1]));
       
       const googleAuthData = {
@@ -362,7 +348,17 @@ function App() {
         setCurrentUser(authResult.data.user.username);
         setCurrentUserId(authResult.data.user.id);
         
-        resetUserData();
+        setFeeds([]);
+        setArticles([]);
+        setPagination({
+          current_page: 1,
+          per_page: 20,
+          total_articles: 0,
+          total_pages: 0,
+          has_next: false,
+          has_previous: false
+        });
+        setCurrentPage(1);
         
       } else {
         setMessage('Erreur lors de la connexion Google: ' + authResult.data.error);
@@ -373,7 +369,6 @@ function App() {
     }
   };
 
-  // Initialisation du bouton de connexion Google
   const initializeGoogleSignIn = () => {
     if (window.google && window.google.accounts) {
       try {
@@ -403,7 +398,6 @@ function App() {
     }
   };
 
-  // Hook d'effet pour Google Auth - tentatives multiples car chargement asynchrone
   React.useEffect(() => {
     const googleButton = document.getElementById("google-signin-button");
     
@@ -413,7 +407,7 @@ function App() {
       }
       
       let attempts = 0;
-      const maxAttempts = 50; // Limite pour éviter les boucles infinies
+      const maxAttempts = 50;
       
       const checkGoogleLoaded = () => {
         attempts++;
@@ -426,7 +420,6 @@ function App() {
       
       checkGoogleLoaded();
     } else {
-      // Nettoyage quand connecté
       if (googleButton) {
         googleButton.innerHTML = '';
         googleButton.style.display = 'none';
@@ -434,7 +427,6 @@ function App() {
     }
   }, [isLoggedIn]);
 
-  // Déconnexion avec nettoyage complet
   const logout = () => {
     setIsLoggedIn(false);
     setCurrentUser(null);
@@ -443,8 +435,6 @@ function App() {
     setArticles([]);
     setCollections([]);
     setCurrentCollection(null);
-    
-    // Réinitialisation de la pagination
     setPagination({
       current_page: 1,
       per_page: 20,
@@ -455,8 +445,6 @@ function App() {
     });
     setCurrentPage(1);
     setMessage('Déconnecté');
-    
-    // Nettoyage des formulaires d'édition
     setEditingFeed(null);
     setEditFeedData({
       title: '',
@@ -467,10 +455,7 @@ function App() {
     });
   };
 
-  // ========================================
-  // GESTION DES FLUX RSS
-  // ========================================
-
+// Gestion des flux RSS
   const loadFeeds = async () => {
     if (!currentUserId) {
       setMessage('Erreur: Aucun utilisateur connecté');
@@ -496,26 +481,14 @@ function App() {
         ...newFeed,
         owner_id: currentUserId
       });
-      
       setMessage('Flux créé avec succès !');
-      
-      // Réinitialisation du formulaire
-      setNewFeed({ 
-        title: '', 
-        url: '', 
-        description: '', 
-        tags: '', 
-        update_frequency: 60 
-      });
-      
-      // Rechargement des données
+      setNewFeed({ title: '', url: '', description: '', tags: '', update_frequency: 60 });
       loadFeeds();
     } catch (error) {
       setMessage('Erreur création de flux : ' + (error.response?.data?.error || error.message));
     }
   };
 
-  // Synchronisation de tous les flux utilisateur
   const syncAllFeeds = async () => {
     if (!currentUserId) return;
 
@@ -523,8 +496,6 @@ function App() {
       setMessage('Synchronisation en cours...');
       const response = await axios.post(`http://localhost:8000/users/${currentUserId}/fetch-all-articles`);
       setMessage(response.data.message);
-      
-      // Rechargement des données
       loadFeeds();
       loadAllArticles(1);
     } catch (error) {
@@ -532,11 +503,9 @@ function App() {
     }
   };
 
-  // Suppression de flux avec gestion des collections
   const deleteFeed = async (feedId, feedTitle) => {
     if (!currentUserId) return;
 
-    // Double confirmation pour éviter les suppressions accidentelles
     if (!window.confirm(`Êtes-vous sûr de vouloir supprimer le flux "${feedTitle}" ?`)) {
       return;
     }
@@ -545,7 +514,6 @@ function App() {
       setMessage('Suppression en cours...');
       const response = await axios.delete(`http://localhost:8000/feeds/${feedId}?user_id=${currentUserId}`);
       
-      // Gestion du cas où le flux est utilisé dans des collections
       if (response.data.error && response.data.error.includes('utilisé dans des collections')) {
         const collectionsMessage = `Ce flux est utilisé dans les collections suivantes :\n${response.data.collections.join(', ')}\n\nVoulez-vous le désactiver à la place ?`;
         
@@ -560,7 +528,6 @@ function App() {
       setMessage(response.data.message || 'Flux supprimé avec succès');
       await loadFeeds();
       
-      // Mise à jour des articles si nécessaire
       if (articles.length > 0) {
         await loadAllArticles(currentPage);
       }
@@ -571,7 +538,6 @@ function App() {
     }
   };
 
-  // Activation/désactivation d'un flux
   const toggleFeedActiveStatus = async (feedId, feedTitle) => {
     if (!currentUserId) return;
 
@@ -585,10 +551,6 @@ function App() {
     }
   };
 
-  // ========================================
-  // ÉDITION DE FLUX
-  // ========================================
-  
   const startEditFeed = (feed) => {
     setEditingFeed(feed.id);
     setEditFeedData({
@@ -614,7 +576,6 @@ function App() {
   const saveFeedEdit = async (feedId) => {
     if (!currentUserId) return;
 
-    // Validation basique
     if (!editFeedData.title.trim() || !editFeedData.url.trim()) {
       setMessage('Erreur: Titre et URL requis');
       return;
@@ -628,8 +589,6 @@ function App() {
       });
       
       setMessage(response.data.message || 'Flux modifié avec succès');
-      
-      // Nettoyage du formulaire d'édition
       setEditingFeed(null);
       setEditFeedData({
         title: '',
@@ -646,14 +605,12 @@ function App() {
     }
   };
 
-  // Actualisation d'un flux spécifique
   const refreshSingleFeed = async (feedId, feedTitle) => {
     try {
       setMessage(`Actualisation de "${feedTitle}" en cours...`);
       const response = await axios.post(`http://localhost:8000/feeds/${feedId}/refresh`);
       setMessage(response.data.message || 'Flux actualisé');
       
-      // Mise à jour des articles si affichés
       if (articles.length > 0) {
         await loadAllArticles(currentPage);
       }
@@ -663,21 +620,22 @@ function App() {
     }
   };
 
-  // ========================================
-  // GESTION DES ARTICLES
-  // ========================================
-
+// Gestion des articles
   const loadAllArticles = async (page = 1) => {
     if (!currentUserId) return;
-
     try {
+      const isEmpty = filters.read === null && filters.favorite === null &&
+                      !filters.search && filters.days === null &&
+                      filters.feed_id === null && !filters.tags;
+      if (!isEmpty) {
+        return await applyFilters(filters, page);
+      }
       const response = await axios.get(`http://localhost:8000/users/${currentUserId}/articles?page=${page}&per_page=20`);
       
       setArticles(response.data.articles || []);
       setPagination(response.data.pagination || {});
       setCurrentPage(page);
       
-      // Calcul des statistiques pour le message
       const articleCount = response.data.articles ? response.data.articles.length : 0;
       const totalCount = response.data.pagination ? response.data.pagination.total_articles : 0;
       
@@ -687,13 +645,54 @@ function App() {
     }
   };
 
-  // Basculer le statut de lecture d'un article
-  const toggleRead = async (articleId, isRead) => {
+  
+  const applyFilters = async (customFilters = null, page = 1) => {
+    if (!currentUserId) return;
+    const activeFilters = customFilters || filters;
+    try {
+      const isEmpty = activeFilters.read === null && activeFilters.favorite === null &&
+                      !activeFilters.search && activeFilters.days === null &&
+                      activeFilters.feed_id === null && !activeFilters.tags;
+      if (isEmpty) {
+        // Pas de filtres actifs : fallback sur le chargement standard
+        await loadAllArticles(page);
+        return;
+      }
+      let url = `http://localhost:8000/users/${currentUserId}/articles/filter?page=${page}&per_page=20`;
+      const tagsParam = (selectedUserTags && selectedUserTags.length > 0)
+        ? selectedUserTags.join(',')
+        : (activeFilters.tags || '');
+      if (activeFilters.read !== null) {
+        url += `&read=${activeFilters.read}`;
+      }
+      if (activeFilters.favorite !== null) {
+        url += `&favorite=${activeFilters.favorite}`;
+      }
+      if (activeFilters.search) {
+        url += `&search=${encodeURIComponent(activeFilters.search)}`;
+      }
+      if (activeFilters.days !== null) {
+        url += `&days=${activeFilters.days}`;
+      }
+      if (activeFilters.feed_id !== null) {
+        url += `&feed_id=${activeFilters.feed_id}`;
+      }
+      if (tagsParam) {
+        url += `&tags=${encodeURIComponent(tagsParam)}`;
+      }
+      const response = await axios.get(url);
+      setArticles(response.data.articles || []);
+      setPagination(response.data.pagination || {});
+      setCurrentPage(page);
+      setMessage(`Filtrage appliqué - ${response.data.pagination?.total_articles || 0} articles trouvés`);
+    } catch (error) {
+      setMessage('Erreur lors du filtrage: ' + (error.response?.data?.detail || error.message));
+    }
+  };
+const toggleRead = async (articleId, isRead) => {
     try {
       const response = await axios.patch(`http://localhost:8000/articles/${articleId}/read?read_status=${!isRead}`);
       setMessage(`Article ${!isRead ? 'marqué comme lu' : 'marqué comme non lu'}`);
-      
-      // Rechargement contextuel
       if (currentCollection) {
         loadCollectionArticles(currentCollection.id);
       } else {
@@ -704,14 +703,11 @@ function App() {
     }
   };
 
-  // Basculer le statut favori d'un article
   const toggleFavorite = async (articleId, isFavorite) => {
     try {
       const url = `http://localhost:8000/articles/${articleId}/favorite?favorite_status=${!isFavorite}`;
       const response = await axios.patch(url);
       setMessage(`Article ${!isFavorite ? 'ajouté aux favoris' : 'retiré des favoris'}`);
-      
-      // Rechargement contextuel
       if (currentCollection) {
         loadCollectionArticles(currentCollection.id);
       } else {
@@ -722,10 +718,7 @@ function App() {
     }
   };
 
-  // ========================================
-  // FONCTIONS DES COLLECTIONS
-  // ========================================
-
+  // Fonctions pour les collections
   const loadCollections = async () => {
     if (!currentUserId) return;
 
@@ -747,8 +740,6 @@ function App() {
     try {
       const response = await axios.post(`http://localhost:8000/collections?owner_id=${currentUserId}`, newCollection);
       setMessage(`Collection "${newCollection.name}" créée avec succès !`);
-      
-      // Nettoyage du formulaire
       setNewCollection({ name: '', description: '', is_private: false });
       setShowCreateCollection(false);
       loadCollections();
@@ -757,11 +748,9 @@ function App() {
     }
   };
 
-  // Suppression d'une collection avec double confirmation
   const deleteCollection = async (collectionId, collectionName) => {
     if (!currentUserId) return;
 
-    // Triple sécurité pour éviter les suppressions accidentelles
     const confirmMessage = `ATTENTION: Cette action est irréversible.\n\nÊtes-vous sûr de vouloir supprimer définitivement la collection "${collectionName}" ?\n\nTapez "SUPPRIMER" pour confirmer:`;
     
     const userConfirmation = window.prompt(confirmMessage);
@@ -782,7 +771,6 @@ function App() {
       
       setMessage(response.data.message || 'Collection supprimée avec succès');
       
-      // Fermeture de la collection si elle est actuellement ouverte
       if (currentCollection && currentCollection.id === collectionId) {
         closeCollection();
       }
@@ -793,7 +781,6 @@ function App() {
     }
   };
 
-  // Quitter une collection
   const leaveCollection = async (collectionId, collectionName) => {
     if (!currentUserId) return;
 
@@ -817,7 +804,6 @@ function App() {
     }
   };
 
-  // Fonctions utilitaires pour les permissions
   const canDeleteCollection = (collection) => {
     return collection.is_owner && collection.owner_id === currentUserId;
   };
@@ -826,7 +812,6 @@ function App() {
     return !collection.is_owner && collection.owner_id !== currentUserId;
   };
 
-  // Ouverture d'une collection avec chargement de toutes les données
   const openCollection = async (collection) => {
     setCurrentCollection(collection);
     await loadCollectionArticles(collection.id);
@@ -835,7 +820,6 @@ function App() {
     await loadCollectionFeeds(collection.id);
   };
 
-  // Fermeture d'une collection avec nettoyage
   const closeCollection = () => {
     setCurrentCollection(null);
     setCollectionArticles([]);
@@ -845,10 +829,6 @@ function App() {
     setSelectedArticleForComment(null);
   };
 
-  // ========================================
-  // GESTION DES FLUX DE COLLECTIONS
-  // ========================================
-  
   const loadCollectionFeeds = async (collectionId) => {
     if (!currentUserId) return;
 
@@ -883,10 +863,6 @@ function App() {
     }
   };
 
-  // ========================================
-  // SYSTÈME DE MESSAGERIE
-  // ========================================
-  
   const loadCollectionMessages = async (collectionId, articleId = null) => {
     if (!currentUserId) return;
 
@@ -925,10 +901,7 @@ function App() {
         }
       );
       
-      // Nettoyage du champ message
       setNewMessage('');
-      
-      // Rechargement des messages
       await loadCollectionMessages(collectionId, articleId);
       
       if (articleId) {
@@ -941,10 +914,6 @@ function App() {
     }
   };
 
-  // ========================================
-  // GESTION DES MEMBRES
-  // ========================================
-  
   const updateMemberPermissions = async (collectionId, userId, newPermissions) => {
     if (!currentUserId) return;
 
@@ -999,10 +968,6 @@ function App() {
     }
   };
 
-  // ========================================
-  // GESTION DES FLUX DANS LES COLLECTIONS
-  // ========================================
-  
   const addFeedToCollection = async (collectionId) => {
     if (!newCollectionFeed.url.trim()) {
       setMessage('URL du flux requise');
@@ -1055,26 +1020,19 @@ function App() {
     }
   };
 
-  // ========================================
-  // SYSTÈME DE FILTRAGE AVANCÉ
-  // ========================================
-  
   const applyCollectionFilters = async (collectionId, customFilters = null, page = 1) => {
     if (!currentUserId) return;
 
     const activeFilters = customFilters || filters;
     
     try {
-      // Vérification si des filtres sont actifs
       const isEmpty = activeFilters.read === null && activeFilters.favorite === null && 
                      !activeFilters.search && activeFilters.days === null && 
                      activeFilters.feed_id === null && !activeFilters.tags;
 
       if (isEmpty) {
-        // Pas de filtres, chargement normal
         loadCollectionArticles(collectionId, page);
       } else {
-        // Construction de l'URL avec les filtres
         let url = `http://localhost:8000/collections/${collectionId}/articles/filter?user_id=${currentUserId}&page=${page}&per_page=20`;
         
         if (activeFilters.read !== null) {
@@ -1106,13 +1064,8 @@ function App() {
     }
   };
 
-  // ========================================
-  // UTILITAIRES DE FORMATAGE
-  // ========================================
-  
   const formatDate = (dateStr) => {
     try {
-      // Si déjà au bon format, retourner tel quel
       if (dateStr.match(/^\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}$/)) {
         return dateStr;
       }
@@ -1133,25 +1086,17 @@ function App() {
     }
   };
 
-  // ========================================
-  // INTERFACE UTILISATEUR - RENDU PRINCIPAL
-  // ========================================
-  
-  return (
+return (
     <div className="App">
       <h1>SUPRSS - Lecteur de flux RSS</h1>
-      
-      {/* Zone d'affichage des messages système */}
       {message && (
         <div style={{padding: '10px', background: '#f0f0f0', margin: '10px 0', whiteSpace: 'pre-wrap'}}>
           {message}
         </div>
       )}
       
-      {/* Interface de connexion/inscription */}
       {!isLoggedIn ? (
         <div style={{maxWidth: '400px', margin: '0 auto', padding: '20px'}}>
-          {/* Formulaire de connexion */}
           <div style={{marginBottom: '30px'}}>
             <h2>Connexion</h2>
             <div style={{marginBottom: '10px'}}>
@@ -1176,7 +1121,6 @@ function App() {
               </button>
             </div>
             
-            {/* Connexion Google OAuth */}
             <div style={{marginTop: '15px', textAlign: 'center'}}>
               <div style={{marginBottom: '10px', color: '#666', fontSize: '14px'}}>ou</div>
               <div 
@@ -1193,7 +1137,6 @@ function App() {
             </div>
           </div>
 
-          {/* Formulaire d'inscription */}
           <div>
             <h2>Inscription</h2>
             <div>
@@ -1226,9 +1169,7 @@ function App() {
           </div>
         </div>
       ) : (
-        // Interface principale pour utilisateurs connectés
         <div>
-          {/* Barre de navigation utilisateur */}
           <div style={{textAlign: 'right', padding: '10px', borderBottom: '1px solid #ddd', marginBottom: '20px'}}>
             Connecté : <strong>{currentUser}</strong> 
             <button onClick={logout} style={{marginLeft: '10px', padding: '5px 10px'}}>
@@ -1236,16 +1177,11 @@ function App() {
             </button>
           </div>
 
-          {/* Navigation entre vue générale et collections */}
           {!currentCollection ? (
             <div>
-              {/* ========================================
-                  SECTION FLUX PERSONNELS
-                  ======================================== */}
+              {/* Section Flux individuels */}
               <div style={{marginBottom: '30px'}}>
                 <h2>Gestion des flux RSS personnels</h2>
-                
-                {/* Boutons d'action principaux */}
                 <div style={{marginBottom: '20px'}}>
                   <button onClick={loadFeeds} style={{padding: '10px', marginRight: '10px'}}>
                     Charger mes flux
@@ -1258,7 +1194,6 @@ function App() {
                   </button>
                 </div>
 
-                {/* Formulaire de création de flux */}
                 <div style={{marginBottom: '30px', padding: '20px', border: '1px solid #ddd', backgroundColor: '#f8f9fa'}}>
                   <h3>Ajouter un nouveau flux RSS</h3>
                   <div style={{display: 'grid', gap: '10px'}}>
@@ -1306,9 +1241,7 @@ function App() {
                   </div>
                 </div>
 
-                {/* ========================================
-                    SECTION IMPORT/EXPORT
-                    ======================================== */}
+{/* Section Import/Export */}
                 <div style={{marginBottom: '30px', padding: '20px', border: '1px solid #17a2b8', backgroundColor: '#e8f4f8', borderRadius: '8px'}}>
                   <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px'}}>
                     <h3 style={{color: '#17a2b8', margin: 0}}>Import / Export de flux</h3>
@@ -1492,16 +1425,12 @@ function App() {
                   )}
                 </div>
 
-                {/* ========================================
-                    LISTE DES FLUX EXISTANTS
-                    ======================================== */}
                 {feeds.length > 0 && (
                   <div>
                     <h3>Mes flux RSS ({feeds.length})</h3>
                     {feeds.map(feed => (
                       <div key={feed.id} style={{border: '1px solid #ddd', padding: '15px', margin: '10px 0', backgroundColor: '#f8f9fa'}}>
                         {editingFeed === feed.id ? (
-                          // Mode édition d'un flux
                           <div>
                             <div style={{display: 'grid', gap: '10px', marginBottom: '15px'}}>
                               <input 
@@ -1555,7 +1484,6 @@ function App() {
                             </div>
                           </div>
                         ) : (
-                          // Mode affichage normal d'un flux
                           <div>
                             <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'start', marginBottom: '15px'}}>
                               <div style={{flex: 1}}>
@@ -1577,7 +1505,6 @@ function App() {
                                 <p style={{fontSize: '14px', color: '#666', marginBottom: '5px'}}>{feed.url}</p>
                                 {feed.description && <p style={{fontSize: '14px', marginBottom: '10px'}}>{feed.description}</p>}
                                 
-                                {/* Informations techniques du flux */}
                                 <div style={{fontSize: '12px', color: '#666', marginBottom: '10px'}}>
                                   Créé: {feed.created_at} | Fréquence: {feed.update_frequency || 60}min
                                   {feed.last_updated && (
@@ -1585,7 +1512,6 @@ function App() {
                                   )}
                                 </div>
                                 
-                                {/* Affichage des tags */}
                                 {feed.tags && (
                                   <div style={{marginBottom: '10px'}}>
                                     {feed.tags.split(',').map((tag, index) => (
@@ -1606,7 +1532,6 @@ function App() {
                               </div>
                             </div>
                             
-                            {/* Boutons d'action pour le flux */}
                             <div style={{display: 'flex', gap: '8px', flexWrap: 'wrap'}}>
                               <button 
                                 onClick={() => refreshSingleFeed(feed.id, feed.title)}
@@ -1671,9 +1596,7 @@ function App() {
                   </div>
                 )}
 
-                {/* ========================================
-                    SECTION COLLECTIONS PARTAGÉES
-                    ======================================== */}
+{/* Section Collections Partagées */}
                 <div style={{borderTop: '3px solid #28a745', paddingTop: '20px', marginTop: '30px'}}>
                   <h2 style={{color: '#28a745'}}>Collections Partagées</h2>
                   
@@ -1692,7 +1615,6 @@ function App() {
                     </button>
                   </div>
 
-                  {/* Formulaire de création de collection */}
                   {showCreateCollection && (
                     <div style={{padding: '20px', backgroundColor: '#f8f9fa', border: '1px solid #ddd', marginBottom: '20px'}}>
                       <h3>Créer une nouvelle collection</h3>
@@ -1736,7 +1658,6 @@ function App() {
                     </div>
                   )}
 
-                  {/* Liste des collections */}
                   {collections.length > 0 ? (
                     <div>
                       <h3>Mes Collections ({collections.length})</h3>
@@ -1777,7 +1698,6 @@ function App() {
                               )}
                             </div>
 
-                            {/* Boutons d'action pour les collections */}
                             <div style={{display: 'flex', gap: '10px', justifyContent: 'space-between', alignItems: 'center'}}>
                               <button 
                                 onClick={() => openCollection(collection)}
@@ -1838,13 +1758,133 @@ function App() {
                   )}
                 </div>
 
-                {/* ========================================
-                    SECTION ARTICLES PERSONNELS
-                    ======================================== */}
+                {/* Section Articles personnels */}
                 <div style={{borderTop: '3px solid #007bff', paddingTop: '20px', marginTop: '30px'}}>
                   <h2 style={{color: '#007bff'}}>Mes Articles</h2>
                   
-                  <div style={{marginBottom: '20px'}}>
+                  
+                  <div style={{marginBottom: '20px', padding: '15px', backgroundColor: '#f9f9f9', border: '1px solid #ddd', borderRadius: '8px'}}>
+                    <h5>Filtres des articles</h5>
+                    <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '10px', marginBottom: '15px'}}>
+                      <input
+                        type="text"
+                        placeholder="Rechercher..."
+                        value={filters.search}
+                        onChange={(e) => {
+                          const newFilters = {...filters, search: e.target.value};
+                          setFilters(newFilters);
+                          setTimeout(() => applyFilters(newFilters, 1), 500);
+                        }}
+                        style={{padding: '8px', borderRadius: '4px', border: '1px solid #ddd'}}
+                      />
+                      <select
+                        value={filters.days === null ? 'all' : filters.days.toString()}
+                        onChange={(e) => {
+                          const newValue = e.target.value === 'all' ? null : parseInt(e.target.value);
+                          const newFilters = {...filters, days: newValue};
+                          setFilters(newFilters);
+                          applyFilters(newFilters, 1);
+                        }}
+                        style={{padding: '8px', borderRadius: '4px', border: '1px solid #ddd'}}
+                      >
+                        <option value="all">Toutes les dates</option>
+                        <option value="1">Dernières 24h</option>
+                        <option value="7">Derniers 7 jours</option>
+                        <option value="30">Derniers 30 jours</option>
+                      </select>
+                      <select
+                        value={filters.read === null ? 'all' : filters.read.toString()}
+                        onChange={(e) => {
+                          const newValue = e.target.value === 'all' ? null : e.target.value === 'true';
+                          const newFilters = {...filters, read: newValue};
+                          setFilters(newFilters);
+                          applyFilters(newFilters, 1);
+                        }}
+                        style={{padding: '8px', borderRadius: '4px', border: '1px solid #ddd'}}
+                      >
+                        <option value="all">Tous les articles</option>
+                        <option value="false">Non lus</option>
+                        <option value="true">Lus</option>
+                      </select>
+                      <select
+                        value={filters.favorite === null ? 'all' : filters.favorite.toString()}
+                        onChange={(e) => {
+                          const newValue = e.target.value === 'all' ? null : e.target.value === 'true';
+                          const newFilters = {...filters, favorite: newValue};
+                          setFilters(newFilters);
+                          applyFilters(newFilters, 1);
+                        }}
+                        style={{padding: '8px', borderRadius: '4px', border: '1px solid #ddd'}}
+                      >
+                        <option value="all">Tous</option>
+                        <option value="true">Favoris</option>
+                        <option value="false">Non favoris</option>
+                      </select>
+                      <select
+                        value={filters.feed_id === null ? 'all' : filters.feed_id.toString()}
+                        onChange={(e) => {
+                          const newValue = e.target.value === 'all' ? null : parseInt(e.target.value);
+                          const newFilters = {...filters, feed_id: newValue};
+                          setFilters(newFilters);
+                          applyFilters(newFilters, 1);
+                        }}
+                        style={{padding: '8px', borderRadius: '4px', border: '1px solid #ddd'}}
+                      >
+                        <option value="all">Tous les flux</option>
+                        {feeds.map(feed => (
+                          <option key={feed.id} value={feed.id}>{feed.title || feed.url}</option>
+                        ))}
+                      </select>
+                    {/* Tags (Mes Articles) */}
+                    <div>
+                      <div style={{display:'flex', alignItems:'center', gap:'8px', marginBottom:'6px'}}>
+                        <span style={{fontSize:'12px', color:'#333'}}>Tags :</span>
+                        {selectedUserTags.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => { setSelectedUserTags([]); const nf = {...filters, tags: ''}; setFilters(nf); applyFilters(nf, 1); }}
+                            style={{fontSize:'12px', textDecoration:'underline', background:'transparent', border:'none', cursor:'pointer'}}
+                          >
+                            Tout effacer
+                          </button>
+                        )}
+                      </div>
+                      <TagChips tags={availableUserTags} selected={selectedUserTags} onChange={(next) => { try { setSelectedUserTags(next); const nf = { ...(filters || {}), tags: Array.isArray(next) ? next.join(",") : "" }; if (typeof setFilters === "function") setFilters(nf); if (typeof applyFilters === "function") { applyFilters(nf, 1); } else if (typeof filterArticlesForUser === "function") { filterArticlesForUser(1); } else if (typeof loadAllArticles === "function") { loadAllArticles(1); } } catch (e) { console.error(e); } }} />
+                    </div>
+
+                      <input
+                        type="text"
+                        placeholder="Filtrer par tags..."
+                        value={filters.tags}
+                        onChange={(e) => {
+                          const newFilters = {...filters, tags: e.target.value};
+                          setFilters(newFilters);
+                          setTimeout(() => applyFilters(newFilters, 1), 500);
+                        }}
+                        style={{padding: '8px', borderRadius: '4px', border: '1px solid #ddd'}}
+                      />
+                    </div>
+                    <div style={{display: 'flex', gap: '10px', flexWrap: 'wrap'}}>
+                      <button
+                        onClick={() => applyFilters(filters, 1)}
+                        style={{padding: '8px 12px', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '4px'}}
+                      >
+                        Appliquer
+                      </button>
+                      <button
+                        onClick={() => {
+                          const reset = { read: null, favorite: null, search: '', days: null, feed_id: null, tags: '' };
+                      setFilters(reset);
+                      setSelectedUserTags([]);
+                      loadAllArticles(1);
+                        }}
+                        style={{padding: '8px 12px', backgroundColor: '#6c757d', color: 'white', border: 'none', borderRadius: '4px'}}
+                      >
+                        Réinitialiser
+                      </button>
+                    </div>
+                  </div>
+<div style={{marginBottom: '20px'}}>
                     <button 
                       onClick={() => loadAllArticles(1)} 
                       style={{backgroundColor: '#007bff', color: 'white', padding: '15px', fontSize: '16px', border: 'none'}}
@@ -1853,7 +1893,6 @@ function App() {
                     </button>
                   </div>
 
-                  {/* Pagination des articles */}
                   {articles.length > 0 && (
                     <div style={{marginBottom: '20px', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '10px'}}>
                       <button
@@ -1893,7 +1932,6 @@ function App() {
                     </div>
                   )}
 
-                  {/* Affichage des articles ou message d'absence */}
                   {articles.length === 0 ? (
                     <div style={{padding: '40px', textAlign: 'center', backgroundColor: '#f8f9fa', border: '2px dashed #ccc'}}>
                       <h3>Aucun article trouvé</h3>
@@ -1907,6 +1945,12 @@ function App() {
                           <div style={{fontSize: '14px', color: '#007bff', marginBottom: '10px', fontWeight: 'bold'}}>
                             {article.feed ? article.feed.title : 'Source inconnue'}
                           </div>
+                          {article.feed && article.feed.tags && article.feed.tags.trim() && (
+                            <div style={{marginTop: '4px', fontSize: '12px', color: '#555'}}>
+                              Tags flux : {article.feed.tags}
+                            </div>
+                          )}
+
                           
                           <h4 style={{marginBottom: '10px', lineHeight: '1.4', marginTop: '5px', fontSize: '18px', color: '#333'}}>{article.title}</h4>
                           
@@ -1916,7 +1960,6 @@ function App() {
                             </p>
                           )}
                           
-                          {/* Résumé de l'article */}
                           {article.summary && article.summary.trim() ? (
                             <p style={{
                               marginBottom: '15px', 
@@ -1963,7 +2006,6 @@ function App() {
                             Lire l'article complet
                           </a>
                           
-                          {/* Actions sur l'article */}
                           <div style={{display: 'flex', justifyContent: 'center', gap: '15px'}}>
                             <button 
                               onClick={() => toggleRead(article.id, article.is_read)}
@@ -1993,7 +2035,6 @@ function App() {
                         </div>
                       ))}
                       
-                      {/* Pagination en bas de page */}
                       {pagination.total_pages > 1 && (
                         <div style={{marginTop: '30px', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '10px'}}>
                           <button
@@ -2037,1975 +2078,663 @@ function App() {
               </div>
             </div>
           ) : (
-<div style={{padding: '20px', border: '2px solid #28a745', borderRadius: '10px'}}>
 
-
-
+            <div style={{padding: '20px', border: '2px solid #28a745', borderRadius: '10px'}}>
               <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px'}}>
-
-
                 <h2 style={{color: '#28a745'}}>Collection: {currentCollection.name}</h2>
-
-
                 <div style={{display: 'flex', gap: '10px'}}>
-
-
                   {canDeleteCollection(currentCollection) && (
-
-
                     <button 
-
-
                       onClick={() => deleteCollection(currentCollection.id, currentCollection.name)}
-
-
                       style={{
-
-
                         padding: '10px 15px', 
-
-
                         backgroundColor: '#dc3545', 
-
-
                         color: 'white', 
-
-
                         border: 'none',
-
-
                         borderRadius: '5px'
-
-
                       }}
-
-
                     >
-
-
                       Supprimer la collection
-
-
                     </button>
-
-
                   )}
-
-
                   
-
-
                   {canLeaveCollection(currentCollection) && (
-
-
                     <button 
-
-
                       onClick={() => leaveCollection(currentCollection.id, currentCollection.name)}
-
-
                       style={{
-
-
                         padding: '10px 15px', 
-
-
                         backgroundColor: '#ffc107', 
-
-
                         color: 'black', 
-
-
                         border: 'none',
-
-
                         borderRadius: '5px'
-
-
                       }}
-
-
                     >
-
-
                       Quitter la collection
-
-
                     </button>
-
-
                   )}
-
-
                   
-
-
                   <button 
-
-
                     onClick={closeCollection} 
-
-
                     style={{
-
-
                       padding: '10px 15px', 
-
-
                       backgroundColor: '#6c757d', 
-
-
                       color: 'white', 
-
-
                       border: 'none',
-
-
                       borderRadius: '5px'
-
-
                     }}
-
-
                   >
-
-
                     Fermer
-
-
                   </button>
-
-
                 </div>
-
-
               </div>
-
-
-
-
 
               <p>{currentCollection.description}</p>
-
-
               
-
-
               <div style={{marginBottom: '20px', display: 'flex', gap: '10px'}}>
-
-
                 <button 
-
-
                   onClick={() => loadCollectionFeeds(currentCollection.id)}
-
-
                   style={{padding: '10px', backgroundColor: '#007bff', color: 'white', border: 'none'}}
-
-
                 >
-
-
                   Voir les flux ({collectionFeeds.length})
-
-
                 </button>
-
-
                 <button 
-
-
                   onClick={() => syncCollectionFeeds(currentCollection.id)}
-
-
                   style={{padding: '10px', backgroundColor: '#28a745', color: 'white', border: 'none'}}
-
-
                 >
-
-
                   Synchroniser tous les flux
-
-
                 </button>
-
-
                 <button 
-
-
                   onClick={() => loadCollectionArticles(currentCollection.id)}
-
-
                   style={{padding: '10px', backgroundColor: '#17a2b8', color: 'white', border: 'none'}}
-
-
                 >
-
-
                   Charger les articles
-
-
                 </button>
-
-
               </div>
-
-
-
-
 
               {collectionFeeds.length > 0 && (
-
-
                 <div style={{marginBottom: '20px', padding: '15px', backgroundColor: '#f8f9fa', border: '1px solid #ddd'}}>
-
-
                   <h4>Flux de la collection ({collectionFeeds.length})</h4>
-
-
                   {collectionFeeds.map(feed => (
-
-
                     <div key={feed.id} style={{border: '1px solid #ddd', padding: '15px', margin: '5px 0', backgroundColor: 'white'}}>
-
-
                       <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'start'}}>
-
-
                         <div style={{flex: 1}}>
-
-
                           <h5 style={{marginTop: '0', marginBottom: '10px'}}>{feed.title}</h5>
-
-
                           <p style={{fontSize: '12px', color: '#666', marginBottom: '5px'}}>{feed.url}</p>
-
-
                           <p style={{fontSize: '12px'}}>Ajouté par: {feed.added_by} le {formatDate(feed.added_at)}</p>
-
-
                           {feed.last_updated && (
-
-
                             <p style={{fontSize: '12px', color: '#28a745', marginBottom: '0'}}>
-
-
                               Dernière sync: {formatDate(feed.last_updated)}
-
-
                             </p>
-
-
                           )}
-
-
                         </div>
-
-
                         
-
-
                         <div style={{display: 'flex', gap: '10px', alignItems: 'center'}}>
-
-
                           {feed.permissions && feed.permissions.can_delete && (
-
-
                             <button
-
-
                               onClick={() => removeFeedFromCollection(currentCollection.id, feed.id)}
-
-
                               style={{
-
-
                                 padding: '8px 12px',
-
-
                                 backgroundColor: '#dc3545',
-
-
                                 color: 'white',
-
-
                                 border: 'none',
-
-
                                 borderRadius: '4px',
-
-
                                 fontSize: '12px'
-
-
                               }}
-
-
                               title="Supprimer ce flux de la collection"
-
-
                             >
-
-
                               Supprimer
-
-
                             </button>
-
-
                           )}
-
-
-
-
 
                           <button 
-
-
                             onClick={() => refreshSingleFeed(feed.id, feed.title)}
-
-
                             style={{
-
-
                               padding: '8px 12px', 
-
-
                               backgroundColor: '#17a2b8', 
-
-
                               color: 'white', 
-
-
                               border: 'none',
-
-
                               borderRadius: '4px',
-
-
                               fontSize: '12px'
-
-
                             }}
-
-
                             title="Actualiser ce flux"
-
-
                           >
-
-
                             Actualiser
-
-
                           </button>
-
-
                         </div>
-
-
                       </div>
-
-
                     </div>
-
-
                   ))}
-
-
                 </div>
-
-
               )}
-
-
               
-
-
               <div style={{marginBottom: '20px', padding: '15px', backgroundColor: '#f8f9fa', border: '1px solid #ddd'}}>
-
-
                 <h4>Ajouter un flux à la collection</h4>
-
-
                 <div style={{display: 'flex', gap: '10px', alignItems: 'center'}}>
-
-
                   <input 
-
-
                     placeholder="URL du flux RSS" 
-
-
                     value={newCollectionFeed.url}
-
-
                     onChange={(e) => setNewCollectionFeed({...newCollectionFeed, url: e.target.value})}
-
-
                     style={{flex: 1, padding: '8px'}}
-
-
                   />
-
-
                   <input 
-
-
                     placeholder="Titre (optionnel)" 
-
-
                     value={newCollectionFeed.title}
-
-
                     onChange={(e) => setNewCollectionFeed({...newCollectionFeed, title: e.target.value})}
-
-
                     style={{flex: 1, padding: '8px'}}
-
-
                   />
-
-
                   <button 
-
-
                     onClick={() => addFeedToCollection(currentCollection.id)}
-
-
                     style={{padding: '8px 15px', backgroundColor: '#28a745', color: 'white', border: 'none'}}
-
-
                   >
-
-
                     Ajouter
-
-
                   </button>
-
-
                 </div>
-
-
               </div>
-
-
-
-
 
               <div style={{marginBottom: '20px', padding: '15px', backgroundColor: '#e3f2fd', border: '1px solid #bbdefb'}}>
-
-
                 <h4>Inviter un membre</h4>
-
-
                 <div style={{display: 'flex', gap: '10px', alignItems: 'center', marginBottom: '10px'}}>
-
-
                   <input 
-
-
                     placeholder="Email de l'utilisateur" 
-
-
                     value={inviteEmail}
-
-
                     onChange={(e) => setInviteEmail(e.target.value)}
-
-
                     style={{flex: 1, padding: '8px'}}
-
-
                   />
-
-
                   <select
-
-
                     value={invitePermissions}
-
-
                     onChange={(e) => setInvitePermissions(e.target.value)}
-
-
                     style={{padding: '8px', borderRadius: '4px', border: '1px solid #ddd', minWidth: '120px'}}
-
-
                   >
-
-
                     <option value="read">Lecture seule</option>
-
-
                     <option value="write">Lecture + Écriture</option>
-
-
                     <option value="admin">Administrateur</option>
-
-
                   </select>
-
-
                   <button 
-
-
                     onClick={() => inviteToCollection(currentCollection.id, invitePermissions)}
-
-
                     style={{padding: '8px 15px', backgroundColor: '#17a2b8', color: 'white', border: 'none'}}
-
-
                   >
-
-
                     Inviter
-
-
                   </button>
-
-
                 </div>
-
-
                 <div style={{fontSize: '12px', color: '#666'}}>
-
-
                   <strong>Lecture seule:</strong> Consulter les articles uniquement<br/>
-
-
                   <strong>Lecture + Écriture:</strong> Consulter + marquer lu/favori + ajouter flux<br/>
-
-
                   <strong>Administrateur:</strong> Tous les droits + gestion des membres
-
-
                 </div>
-
-
               </div>
-
-
-
-
 
 <div style={{marginBottom: '20px'}}>
-
-
                 <h4>Membres ({collectionMembers.length})</h4>
-
-
                 <div style={{display: 'grid', gap: '10px'}}>
-
-
                   {collectionMembers.map(member => {
-
-
                     const isCurrentUser = member.user_id === currentUserId;
-
-
                     const isOwner = currentCollection.owner_id === member.user_id;
-
-
                     const currentUserIsOwner = currentCollection.owner_id === currentUserId;
-
-
                     const canModifyRights = currentUserIsOwner && !isOwner;
-
-
                     
-
-
                     return (
-
-
                       <div key={member.user_id} style={{
-
-
                         padding: '15px', 
-
-
                         backgroundColor: '#f8f9fa', 
-
-
                         borderRadius: '8px',
-
-
                         border: '1px solid #ddd'
-
-
                       }}>
-
-
                         <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
-
-
                           <div>
-
-
                             <div style={{display: 'flex', alignItems: 'center', gap: '10px'}}>
-
-
                               <strong>{member.username}</strong>
-
-
                               {isCurrentUser && (
-
-
                                 <span style={{
-
-
                                   padding: '2px 6px',
-
-
                                   backgroundColor: '#17a2b8',
-
-
                                   color: 'white',
-
-
                                   borderRadius: '10px',
-
-
                                   fontSize: '10px'
-
-
                                 }}>
-
-
                                   VOUS
-
-
                                 </span>
-
-
                               )}
-
-
                               {isOwner && (
-
-
                                 <span style={{
-
-
                                   padding: '2px 6px',
-
-
                                   backgroundColor: '#ffc107',
-
-
                                   color: 'black',
-
-
                                   borderRadius: '10px',
-
-
                                   fontSize: '10px'
-
-
                                 }}>
-
-
                                   PROPRIÉTAIRE
-
-
                                 </span>
-
-
                               )}
-
-
                             </div>
-
-
                             <div style={{fontSize: '12px', color: '#666'}}>{member.email}</div>
-
-
                             <div style={{fontSize: '11px', color: '#888'}}>
-
-
                               Membre depuis: {formatDate(member.joined_at)}
-
-
                             </div>
-
-
                           </div>
-
-
                           
-
-
                           <div style={{display: 'flex', alignItems: 'center', gap: '10px'}}>
-
-
                             {canModifyRights ? (
-
-
                               <div style={{display: 'flex', alignItems: 'center', gap: '8px'}}>
-
-
                                 <select
-
-
                                   value={member.permissions}
-
-
                                   onChange={(e) => updateMemberPermissions(currentCollection.id, member.user_id, e.target.value)}
-
-
                                   style={{
-
-
                                     padding: '6px 10px',
-
-
                                     fontSize: '12px',
-
-
                                     borderRadius: '4px',
-
-
                                     border: '1px solid #ddd',
-
-
                                     minWidth: '130px'
-
-
                                   }}
-
-
                                 >
-
-
                                   <option value="read">Lecture seule</option>
-
-
                                   <option value="write">Lecture + Écriture</option>
-
-
                                   <option value="admin">Administrateur</option>
-
-
                                 </select>
-
-
                                 
-
-
                                 <button
-
-
                                   onClick={() => removeMemberFromCollection(currentCollection.id, member.user_id, member.username)}
-
-
                                   style={{
-
-
                                     padding: '6px 10px',
-
-
                                     backgroundColor: '#dc3545',
-
-
                                     color: 'white',
-
-
                                     border: 'none',
-
-
                                     borderRadius: '4px',
-
-
                                     fontSize: '11px'
-
-
                                   }}
-
-
                                   title="Retirer ce membre de la collection"
-
-
                                 >
-
-
                                   Retirer
-
-
                                 </button>
-
-
                               </div>
-
-
                             ) : (
-
-
                               <span style={{
-
-
                                 padding: '6px 12px', 
-
-
                                 backgroundColor: member.permissions === 'admin' ? '#dc3545' : member.permissions === 'write' ? '#28a745' : '#6c757d',
-
-
                                 color: 'white', 
-
-
                                 borderRadius: '15px', 
-
-
                                 fontSize: '12px'
-
-
                               }}>
-
-
                                 {member.permissions === 'admin' ? 'Administrateur' : 
-
-
                                  member.permissions === 'write' ? 'Lecture + Écriture' : 'Lecture seule'}
-
-
                               </span>
-
-
                             )}
-
-
                           </div>
-
-
                         </div>
-
-
                       </div>
-
-
                     );
-
-
                   })}
-
-
                 </div>
-
-
               </div>
-
-
-
-
 
               <div style={{marginBottom: '20px', padding: '15px', backgroundColor: '#f9f9f9', border: '1px solid #ddd', borderRadius: '8px'}}>
-
-
                 <h5>Filtres des articles</h5>
-
-
                 
-
-
                 <div style={{
-
-
                   display: 'grid', 
-
-
                   gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', 
-
-
                   gap: '10px', 
-
-
                   marginBottom: '15px'
-
-
                 }}>
-
-
                   <input
-
-
                     type="text"
-
-
                     placeholder="Rechercher..."
-
-
                     value={filters.search}
-
-
                     onChange={(e) => {
-
-
                       const newFilters = {...filters, search: e.target.value};
-
-
                       setFilters(newFilters);
-
-
                       setTimeout(() => applyCollectionFilters(currentCollection.id, newFilters, 1), 500);
-
-
                     }}
-
-
                     style={{padding: '8px', borderRadius: '4px', border: '1px solid #ddd'}}
-
-
                   />
 
-
-
-
-
                   <select
-
-
                     value={filters.read === null ? 'all' : filters.read.toString()}
-
-
                     onChange={(e) => {
-
-
                       const newValue = e.target.value === 'all' ? null : e.target.value === 'true';
-
-
                       const newFilters = {...filters, read: newValue};
-
-
                       setFilters(newFilters);
-
-
                       applyCollectionFilters(currentCollection.id, newFilters, 1);
-
-
                     }}
-
-
                     style={{padding: '8px', borderRadius: '4px', border: '1px solid #ddd'}}
-
-
                   >
-
-
                     <option value="all">Tous les articles</option>
-
-
                     <option value="false">Non lus</option>
-
-
                     <option value="true">Lus</option>
-
-
                   </select>
 
-
-
-
-
                   <select
-
-
                     value={filters.favorite === null ? 'all' : filters.favorite.toString()}
-
-
                     onChange={(e) => {
-
-
                       const newValue = e.target.value === 'all' ? null : e.target.value === 'true';
-
-
                       const newFilters = {...filters, favorite: newValue};
-
-
                       setFilters(newFilters);
-
-
                       applyCollectionFilters(currentCollection.id, newFilters, 1);
-
-
                     }}
-
-
                     style={{padding: '8px', borderRadius: '4px', border: '1px solid #ddd'}}
-
-
                   >
-
-
                     <option value="all">Tous</option>
-
-
                     <option value="true">Favoris</option>
-
-
                     <option value="false">Non favoris</option>
-
-
                   </select>
-
-
-
-
 
                   <select
-
-
                     value={filters.feed_id === null ? 'all' : filters.feed_id.toString()}
-
-
                     onChange={(e) => {
-
-
                       const newValue = e.target.value === 'all' ? null : parseInt(e.target.value);
-
-
                       const newFilters = {...filters, feed_id: newValue};
-
-
                       setFilters(newFilters);
-
-
                       applyCollectionFilters(currentCollection.id, newFilters, 1);
-
-
                     }}
-
-
                     style={{padding: '8px', borderRadius: '4px', border: '1px solid #ddd'}}
-
-
                   >
-
-
                     <option value="all">Tous les flux</option>
-
-
                     {collectionFeeds.map(feed => (
-
-
                       <option key={feed.id} value={feed.id}>{feed.title}</option>
-
-
                     ))}
-
-
                   </select>
-
-
-
-
 
                   <input
-
-
                     type="text"
-
-
                     placeholder="Filtrer par tags..."
-
-
                     value={filters.tags}
-
-
                     onChange={(e) => {
-
-
                       const newFilters = {...filters, tags: e.target.value};
-
-
                       setFilters(newFilters);
-
-
                       setTimeout(() => applyCollectionFilters(currentCollection.id, newFilters, 1), 500);
-
-
                     }}
-
-
                     style={{padding: '8px', borderRadius: '4px', border: '1px solid #ddd'}}
-
-
                   />
 
-
-
-
-
                   <select
-
-
                     value={filters.days === null ? 'all' : filters.days.toString()}
-
-
                     onChange={(e) => {
-
-
                       const newValue = e.target.value === 'all' ? null : parseInt(e.target.value);
-
-
                       const newFilters = {...filters, days: newValue};
-
-
                       setFilters(newFilters);
-
-
                       applyCollectionFilters(currentCollection.id, newFilters, 1);
-
-
                     }}
-
-
                     style={{padding: '8px', borderRadius: '4px', border: '1px solid #ddd'}}
-
-
                   >
-
-
                     <option value="all">Toutes les dates</option>
-
-
                     <option value="1">Aujourd'hui</option>
-
-
                     <option value="7">7 derniers jours</option>
-
-
                     <option value="30">30 derniers jours</option>
-
-
                   </select>
-
-
-
-
 
                   <button 
-
-
                     onClick={() => {
-
-
                       const emptyFilters = { read: null, favorite: null, search: '', days: null, feed_id: null, tags: '' };
-
-
                       setFilters(emptyFilters);
-
-
                       applyCollectionFilters(currentCollection.id, emptyFilters, 1);
-
-
                     }}
-
-
                     style={{
-
-
                       padding: '8px 12px', 
-
-
                       backgroundColor: '#dc3545', 
-
-
                       color: 'white', 
-
-
                       border: 'none', 
-
-
                       borderRadius: '4px',
-
-
                       cursor: 'pointer'
-
-
                     }}
-
-
                   >
-
-
                     Effacer filtres
-
-
                   </button>
-
-
                 </div>
-
-
               </div>
-
-
-
-
 
               <div style={{marginBottom: '20px'}}>
-
-
                 <h4>Articles de la collection ({collectionArticles.length})</h4>
-
-
                 
-
-
                 {collectionArticles.length > 0 && pagination.total_pages > 1 && (
-
-
                   <div style={{marginBottom: '20px', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '10px'}}>
-
-
                     <button
-
-
                       onClick={() => applyCollectionFilters(currentCollection.id, filters, pagination.current_page - 1)}
-
-
                       disabled={!pagination.has_previous}
-
-
                       style={{
-
-
                         padding: '8px 12px',
-
-
                         backgroundColor: pagination.has_previous ? '#007bff' : '#6c757d',
-
-
                         color: 'white',
-
-
                         border: 'none',
-
-
                         borderRadius: '4px',
-
-
                         cursor: pagination.has_previous ? 'pointer' : 'not-allowed'
-
-
                       }}
-
-
                     >
-
-
                       Précédent
-
-
                     </button>
-
-
                     
-
-
                     <span style={{padding: '8px 15px', backgroundColor: '#f8f9fa', borderRadius: '4px'}}>
-
-
                       Page {pagination.current_page} sur {pagination.total_pages} 
-
-
                       ({pagination.total_articles} articles)
-
-
                     </span>
-
-
                     
-
-
                     <button
-
-
                       onClick={() => applyCollectionFilters(currentCollection.id, filters, pagination.current_page + 1)}
-
-
                       disabled={!pagination.has_next}
-
-
                       style={{
-
-
                         padding: '8px 12px',
-
-
                         backgroundColor: pagination.has_next ? '#007bff' : '#6c757d',
-
-
                         color: 'white',
-
-
                         border: 'none',
-
-
                         borderRadius: '4px',
-
-
                         cursor: pagination.has_next ? 'pointer' : 'not-allowed'
-
-
                       }}
-
-
                     >
-
-
                       Suivant
-
-
                     </button>
-
-
                   </div>
-
-
                 )}
-
-
-
-
 
                 {collectionArticles.length === 0 ? (
-
-
                   <div style={{padding: '20px', textAlign: 'center', backgroundColor: '#f8f9fa', border: '2px dashed #ccc'}}>
-
-
                     <p>Aucun article dans cette collection. Ajoutez des flux RSS pour voir des articles.</p>
-
-
                   </div>
-
-
                 ) : (
-
-
                   collectionArticles.map(article => (
-
-
                     <div key={article.id} style={{border: '1px solid #ddd', padding: '15px', margin: '10px 0', backgroundColor: 'white', borderRadius: '5px'}}>
-
-
                       <div style={{fontSize: '14px', color: '#007bff', marginBottom: '10px', fontWeight: 'bold'}}>
-
-
                         {article.feed ? article.feed.title : 'Source inconnue'}
-
-
                       </div>
-
-
                       
-
-
                       <h5 style={{marginBottom: '10px', lineHeight: '1.4'}}>{article.title}</h5>
-
-
                       
-
-
                       {article.published && (
-
-
                         <p style={{fontSize: '12px', color: '#888', marginBottom: '12px'}}>
-
-
                           Publié le : {formatDate(article.published)}
-
-
                         </p>
-
-
                       )}
-
-
                       
-
-
                       {article.summary && (
-
-
                         <p style={{marginBottom: '15px', lineHeight: '1.6', color: '#333', fontSize: '14px'}}>
-
-
                           {article.summary}
-
-
                         </p>
-
-
                       )}
-
-
                       
-
-
                       <a 
-
-
                         href={article.link} 
-
-
                         target="_blank" 
-
-
                         rel="noopener noreferrer" 
-
-
                         style={{color: '#007bff', textDecoration: 'none', display: 'inline-block', marginBottom: '15px'}}
-
-
                       >
-
-
                         Lire l'article complet
-
-
                       </a>
-
-
                       
-
-
                       <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
-
-
                         <div style={{display: 'flex', gap: '10px'}}>
-
-
                           <button 
-
-
                             onClick={() => toggleRead(article.id, article.is_read)}
-
-
                             style={{
-
-
                               padding: '8px 15px',
-
-
                               backgroundColor: article.is_read ? '#dc3545' : '#28a745',
-
-
                               color: 'white',
-
-
                               border: 'none',
-
-
                               borderRadius: '5px'
-
-
                             }}
-
-
                           >
-
-
                             {article.is_read ? 'Marquer non lu' : 'Marquer lu'}
-
-
                           </button>
-
-
                           <button
-
-
                             onClick={() => toggleFavorite(article.id, article.is_favorite)}
-
-
                             style={{
-
-
                               padding: '8px 15px',
-
-
                               backgroundColor: article.is_favorite ? '#ffc107' : '#6c757d',
-
-
                               color: 'white',
-
-
                               border: 'none',
-
-
                               borderRadius: '5px'
-
-
                             }}
-
-
                           >
-
-
                             {article.is_favorite ? 'Retirer favori' : 'Ajouter favori'}
-
-
                           </button>
-
-
                         </div>
-
-
                         
-
-
                         <button
-
-
                           onClick={() => {
-
-
                             setSelectedArticleForComment(selectedArticleForComment === article.id ? null : article.id);
-
-
                             if (selectedArticleForComment !== article.id) {
-
-
                               loadCollectionMessages(currentCollection.id, article.id);
-
-
                             }
-
-
                           }}
-
-
                           style={{
-
-
                             padding: '8px 15px',
-
-
                             backgroundColor: '#17a2b8',
-
-
                             color: 'white',
-
-
                             border: 'none',
-
-
                             borderRadius: '5px'
-
-
                           }}
-
-
                         >
-
-
                           {selectedArticleForComment === article.id ? 'Masquer commentaires' : 'Commentaires'}
-
-
                         </button>
-
-
                       </div>
-
-
-
-
 
                       {selectedArticleForComment === article.id && (
-
-
                         <div style={{marginTop: '15px', padding: '15px', backgroundColor: '#f8f9fa', borderRadius: '5px'}}>
-
-
                           <h6>Commentaires sur cet article</h6>
-
-
                           
-
-
                           <div style={{maxHeight: '200px', overflowY: 'auto', marginBottom: '10px'}}>
-
-
                             {collectionMessages.filter(msg => msg.article_id === article.id).map(msg => (
-
-
                               <div key={msg.id} style={{
-
-
                                 padding: '8px', 
-
-
                                 marginBottom: '8px', 
-
-
                                 backgroundColor: 'white', 
-
-
                                 borderRadius: '5px',
-
-
                                 borderLeft: '3px solid #007bff'
-
-
                               }}>
-
-
                                 <strong>{msg.username}:</strong> {msg.message}
-
-
                                 <div style={{fontSize: '11px', color: '#666', marginTop: '5px'}}>
-
-
                                   {formatDate(msg.created_at)}
-
-
                                 </div>
-
-
                               </div>
-
-
                             ))}
-
-
                           </div>
-
-
                           
-
-
                           <div style={{display: 'flex', gap: '10px'}}>
-
-
                             <input 
-
-
                               placeholder="Ajouter un commentaire..." 
-
-
                               value={newMessage}
-
-
                               onChange={(e) => setNewMessage(e.target.value)}
-
-
                               style={{flex: 1, padding: '8px'}}
-
-
                               onKeyPress={(e) => {
-
-
                                 if (e.key === 'Enter') {
-
-
                                   sendMessage(currentCollection.id, article.id);
-
-
                                 }
-
-
                               }}
-
-
                             />
-
-
                             <button 
-
-
                               onClick={() => sendMessage(currentCollection.id, article.id)}
-
-
                               style={{padding: '8px 15px', backgroundColor: '#007bff', color: 'white', border: 'none'}}
-
-
                             >
-
-
                               Envoyer
-
-
                             </button>
-
-
                           </div>
-
-
                         </div>
-
-
                       )}
-
-
                     </div>
-
-
                   ))
-
-
                 )}
-
-
                 
-
-
                 {collectionArticles.length > 0 && pagination.total_pages > 1 && (
-
-
                   <div style={{marginTop: '20px', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '10px'}}>
-
-
                     <button
-
-
                       onClick={() => applyCollectionFilters(currentCollection.id, filters, pagination.current_page - 1)}
-
-
                       disabled={!pagination.has_previous}
-
-
                       style={{
-
-
                         padding: '8px 12px',
-
-
                         backgroundColor: pagination.has_previous ? '#007bff' : '#6c757d',
-
-
                         color: 'white',
-
-
                         border: 'none',
-
-
                         borderRadius: '4px',
-
-
                         cursor: pagination.has_previous ? 'pointer' : 'not-allowed'
-
-
                       }}
-
-
                     >
-
-
                       Précédent
-
-
                     </button>
-
-
                     
-
-
                     <span style={{padding: '8px 15px', backgroundColor: '#f8f9fa', borderRadius: '4px'}}>
-
-
                       Page {pagination.current_page} sur {pagination.total_pages}
-
-
                     </span>
-
-
                     
-
-
                     <button
-
-
                       onClick={() => applyCollectionFilters(currentCollection.id, filters, pagination.current_page + 1)}
-
-
                       disabled={!pagination.has_next}
-
-
                       style={{
-
-
                         padding: '8px 12px',
-
-
                         backgroundColor: pagination.has_next ? '#007bff' : '#6c757d',
-
-
                         color: 'white',
-
-
                         border: 'none',
-
-
                         borderRadius: '4px',
-
-
                         cursor: pagination.has_next ? 'pointer' : 'not-allowed'
-
-
                       }}
-
-
                     >
-
-
                       Suivant
-
-
                     </button>
-
-
                   </div>
-
-
                 )}
-
-
               </div>
-
-
-
-
 
               <div style={{marginTop: '30px', borderTop: '2px solid #28a745', paddingTop: '20px'}}>
-
-
                 <h4>Discussion générale</h4>
-
-
                 
-
-
                 <div style={{
-
-
                   maxHeight: '300px', 
-
-
                   overflowY: 'auto', 
-
-
                   padding: '10px', 
-
-
                   backgroundColor: '#f8f9fa', 
-
-
                   border: '1px solid #ddd', 
-
-
                   marginBottom: '10px'
-
-
                 }}>
-
-
                   {collectionMessages.filter(msg => !msg.article_id).map(msg => (
-
-
                     <div key={msg.id} style={{
-
-
                       padding: '10px', 
-
-
                       marginBottom: '10px', 
-
-
                       backgroundColor: 'white', 
-
-
                       borderRadius: '5px'
-
-
                     }}>
-
-
                       <strong>{msg.username}:</strong> {msg.message}
-
-
                       <div style={{fontSize: '11px', color: '#666', marginTop: '5px'}}>
-
-
                         {formatDate(msg.created_at)}
-
-
                       </div>
-
-
                     </div>
-
-
                   ))}
-
-
                 </div>
-
-
                 
-
-
                 <div style={{display: 'flex', gap: '10px'}}>
-
-
                   <input 
-
-
                     placeholder="Message pour la collection..." 
-
-
                     value={newMessage}
-
-
                     onChange={(e) => setNewMessage(e.target.value)}
-
-
                     style={{flex: 1, padding: '10px'}}
-
-
                     onKeyPress={(e) => {
-
-
                       if (e.key === 'Enter') {
-
-
                         sendMessage(currentCollection.id);
-
-
                       }
-
-
                     }}
-
-
                   />
-
-
                   <button 
-
-
                     onClick={() => sendMessage(currentCollection.id)}
-
-
                     style={{padding: '10px 20px', backgroundColor: '#28a745', color: 'white', border: 'none'}}
-
-
                   >
-
-
                     Envoyer
-
-
                   </button>
-
-
                 </div>
-
-
               </div>
-
-
             </div>
           )}
         </div>
