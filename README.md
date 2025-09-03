@@ -41,16 +41,15 @@ L’application est découpée en trois services (conteneurisés via Docker) :
 - Remplir avec vos identifiants 
 
 Example minimal : 
+   ```bash
+   POSTGRES_DB=nom_base_de_donnée
+   POSTGRES_USER=nom_utilisateur
+   POSTGRES_PASSWORD=mot_de_passe
 
-    ```bash 
-    POSTGRES_DB=nom_base_de_donnée
-    POSTGRES_USER=nom_utilisateur
-    POSTGRES_PASSWORD=mot_de_passe
-
-    GOOGLE_CLIENT_ID=<google_client_id>
-    CORS_ALLOWED_ORIGINS=http://localhost:3000
-    DATABASE_URL=postgresql://nom_utilisateur:mot_de_passe@database:5432/base_de_données
-    ```
+   GOOGLE_CLIENT_ID=<google_client_id>
+   CORS_ALLOWED_ORIGINS=http://localhost:3000
+   DATABASE_URL=postgresql://nom_utilisateur:mot_de_passe@database:5432/base_de_données
+   ```
 
 
 3. **Lancer les conteurs**
