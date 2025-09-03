@@ -65,12 +65,13 @@ curl -X POST http://localhost:8000/create-tables
 Exemple minimal :
 
 # Base de données
-POSTGRES_DB=suprss_db
-POSTGRES_USER=suprss_user
-POSTGRES_PASSWORD=suprss_password
+POSTGRES_DB=nom_base_de_données
+POSTGRES_USER=nom_utilisateur
+POSTGRES_PASSWORD=mot_de_passe
+DATABASE_URL=postgresql://nom_utilisateur:mot_de_passe@database:5432/nom_base_de_données
 
 # OAuth Google
-GOOGLE_CLIENT_ID=<client_id_google>
+GOOGLE_CLIENT_ID=<google_client_id>
 
 # CORS
 CORS_ALLOWED_ORIGINS=http://localhost:3000
