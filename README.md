@@ -28,7 +28,7 @@ L’application est découpée en trois services (conteneurisés via Docker) :
 
 ---
 
-## ⚙️ Installation & déploiement
+## Installation & déploiement
 
 1. **Cloner le dépôt**
    ```bash
@@ -41,6 +41,7 @@ L’application est découpée en trois services (conteneurisés via Docker) :
 - Remplir avec vos identifiants 
 
 Example minimal : 
+
     ```bash 
     POSTGRES_DB=nom_base_de_donnée
     POSTGRES_USER=nom_utilisateur
